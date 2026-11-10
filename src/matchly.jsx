@@ -554,6 +554,9 @@ const CFG = {
   logoToken: ENV.VITE_LOGO_DEV_TOKEN || "",
 };
 const AO_VIVO = !!(CFG.supaUrl && CFG.supaKey);
+/* Exemplos (empresas, vagas e candidatos fictícios) só aparecem na prévia.
+   No site publicado começa vazio: as empresas entram quando decidirem se cadastrar. */
+const DEMO = !AO_VIVO && !ENV.PROD;
 const dominioDe = (url) => { try { return new URL(/^https?:/.test(url) ? url : "https://" + url).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
 
 
@@ -726,9 +729,9 @@ export default function App() {
   const [logged, setLogged] = useState(!!GUARDADO?.logged);
   const [profile, setProfile] = useState(GUARDADO?.profile || DEFAULT_PROFILE);
   const [prefs, setPrefs] = useState(GUARDADO?.prefs || DEFAULT_PREFS);
-  const [saved, setSaved] = useState(GUARDADO?.saved || (AO_VIVO ? {} : { j2: "Alta prioridade" }));
+  const [saved, setSaved] = useState(GUARDADO?.saved || (!DEMO ? {} : { j2: "Alta prioridade" }));
   const [hidden, setHidden] = useState(GUARDADO?.hidden || []);
-  const [apps, setApps] = useState(GUARDADO?.apps || (AO_VIVO ? [] : [
+  const [apps, setApps] = useState(GUARDADO?.apps || (!DEMO ? [] : [
     { id: "a1", jobId: "j6", stage: "Candidatura enviada", date: "02/09", notes: "" },
     { id: "a2", jobId: "j7", stage: "Entrevista", date: "28/08", notes: "Entrevista com a gestora, 12/09 às 14h." },
     { id: "a3", jobId: "j9", stage: "Interessadas", date: "05/09", notes: "" },
@@ -742,18 +745,18 @@ export default function App() {
   const [myJobs, setMyJobs] = useState([]);
   const [jobsVersion, setJobsVersion] = useState(0);
   const bumpJobs = () => setJobsVersion((v) => v + 1);
-  const [following, setFollowing] = useState(["c1"]);
+  const [following, setFollowing] = useState(DEMO ? ["c1"] : []);
   const [companyOpen, setCompanyOpen] = useState(null);
-  const [compare, setCompare] = useState(["j1", "j2"]);
+  const [compare, setCompare] = useState(DEMO ? ["j1", "j2"] : []);
   const [alerts, setAlerts] = useState({ freq: "Diariamente", min: 85, types: ["Nova vaga", "Entrevista", "Empresa favorita contratando"], email: true, push: true });
   const [privacy, setPrivacy] = useState({ visibility: "Somente recrutadores", findable: true, resume: true, aiData: true, notify: true });
-  const [notifs, setNotifs] = useState(GUARDADO?.notifs || [
+  const [notifs, setNotifs] = useState(GUARDADO?.notifs || (!DEMO ? [] : [
     { id: "n1", icon: "star", title: "Match alto: 96% em Analista de Dados Pleno", text: "Banco Aurora · São Paulo · remoto", time: "há 2h", read: false, jobId: "j1" },
     { id: "n2", icon: "mic", title: "Entrevista confirmada", text: "Lar Digital · Product Analyst · 12/09 às 14h", time: "há 5h", read: false },
     { id: "n3", icon: "building", title: "Dataforma está contratando", text: "Empresa que você segue publicou 1 vaga nova", time: "ontem", read: true, jobId: "j2" },
     { id: "n4", icon: "file", title: "Sua candidatura mudou de status", text: "Perfumaria Flor de Lis · em processo seletivo", time: "2 dias", read: true },
     { id: "n5", icon: "clock", title: "Prazo de candidatura em 3 dias", text: "Engenheiro(a) de Dados Pleno · Bebidas Horizonte", time: "3 dias", read: true, jobId: "j4" },
-  ]);
+  ]));
 
 
   useEffect(() => {
@@ -801,7 +804,7 @@ export default function App() {
         setJobsVersion((x) => x + 1);
       } catch (e) {
         console.error(e);
-        setToast("Não foi possível carregar as vagas agora. Mostrando a demonstração.");
+        setToast("Não foi possível carregar as vagas agora. Tente de novo em alguns minutos.");
       } finally { setCarregando(false); }
     })();
   }, [prefs.city, profile.city]);
@@ -973,6 +976,22 @@ function Landing({ comecar, go, matches }) {
             </div>
           </div>
 
+          {demo.length === 0 ? (
+          <div className="hero-demo fade">
+            <div className="top between">
+              <span className="small" style={{ fontWeight: 600, color: "var(--ink)" }}>As primeiras vagas estão chegando</span>
+              <span className="muted">novo</span>
+            </div>
+            <div style={{ padding: "22px 20px" }}>
+              <p style={{ margin: 0 }}>O Matchly acabou de abrir. As empresas e as pessoas que contratam estão começando a entrar e publicar vagas.</p>
+              <p className="muted" style={{ margin: "10px 0 0" }}>Faça seu cadastro agora. Quando aparecer uma vaga que combina com você, ela fica no seu painel.</p>
+              <div className="row" style={{ marginTop: 18, flexWrap: "wrap" }}>
+                <button className="btn btn-p btn-sm" onClick={() => comecar([])}>Fazer meu cadastro</button>
+                <button className="btn btn-s btn-sm" onClick={() => go("companyRegister")}>Cadastrar minha empresa</button>
+              </div>
+            </div>
+          </div>
+          ) : (
           <div className="hero-demo fade">
             <div className="top between">
               <span className="small" style={{ fontWeight: 600, color: "var(--ink)" }}>Vagas abertas hoje</span>
@@ -997,6 +1016,7 @@ function Landing({ comecar, go, matches }) {
               })}
             </div>
           </div>
+          )}
         </div>
       </section>
 
@@ -1912,11 +1932,15 @@ function Feed({ ctx }) {
         <p className="muted" style={{ margin: "8px 0 18px" }}>
           {ctx.carregando ? "Carregando vagas…" : `${JOBS.length.toLocaleString("pt-BR")} vagas abertas perto de você${ctx.radarTotal ? `, de ${ctx.radarTotal.toLocaleString("pt-BR")} empresas monitoradas` : ""}.`}
         </p>
-      ) : (
+      ) : DEMO ? (
         <p className="muted" style={{ margin: "8px 0 18px" }}>Modo demonstração: vagas e empresas de exemplo.</p>
-      )}
+      ) : <div style={{ height: 18 }} />}
       {loading || ctx.carregando ? (
         <div className="col" style={{ gap: 14 }}>{[1, 2, 3].map((i) => <div key={i} className="skel" style={{ height: 150 }} />)}</div>
+      ) : JOBS.length === 0 ? (
+        <div className="empty"><h3>Ainda não há vagas publicadas</h3>
+          <p style={{ marginTop: 8 }}>O Matchly acabou de abrir e as empresas estão começando a entrar. Deixe seu cadastro pronto: quando aparecer uma vaga que combina com você, ela aparece aqui.</p>
+          <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("cvedit")}>Completar meu currículo</button></div>
       ) : lista.length === 0 ? (
         <div className="empty"><h3>Nenhuma vaga no feed</h3><p style={{ marginTop: 8 }}>Reabra as vagas ocultadas ou amplie suas preferências.</p>
           <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.setHidden([])}>Restaurar ocultadas</button></div>
@@ -2498,11 +2522,11 @@ function Preferences({ ctx }) {
 /* ----------------------------- ESTATÍSTICAS ----------------------------- */
 function Stats({ ctx }) {
   const { apps, matches, saved } = ctx;
-  const avg = Math.round(JOBS.reduce((a, j) => a + matches[j.id].score, 0) / JOBS.length);
+  const avg = JOBS.length ? Math.round(JOBS.reduce((a, j) => a + matches[j.id].score, 0) / JOBS.length) : null;
   const data = [
-    ["Vagas visualizadas", 128], ["Vagas salvas", Object.keys(saved).length],
+    ["Vagas visualizadas", DEMO ? 128 : "—"], ["Vagas salvas", Object.keys(saved).length],
     ["Candidaturas", apps.length], ["Entrevistas", apps.filter((a) => a.stage.includes("ntrevista")).length],
-    ["Compatibilidade média", avg + "%"], ["Taxa de resposta", "31%"],
+    ["Compatibilidade média", avg === null ? "—" : avg + "%"], ["Taxa de resposta", DEMO ? "31%" : "—"],
   ];
   const week = [4, 7, 3, 9, 12, 6, 8];
   return (
@@ -2583,13 +2607,13 @@ const Hub = ({ go, role, setRole }) => {
         <h3>Trocar de visão</h3>
         <p style={{ fontSize: 14, marginTop: 6 }}>Permissões separadas por papel. Cada visão só enxerga os próprios dados.</p>
         <div className="chips" style={{ marginTop: 12 }}>
-          {(AO_VIVO ? ["Candidato", "Contratante"] : ["Candidato", "Contratante", "Administrador"]).map((r) => (
+          {(!DEMO ? ["Candidato", "Contratante"] : ["Candidato", "Contratante", "Administrador"]).map((r) => (
             <button key={r} className="chip" data-on={role === r ? "1" : "0"}
               onClick={() => { setRole(r); go(r === "Contratante" ? "recruiter" : r === "Administrador" ? "admin" : "dash"); }}>{r}</button>
           ))}
         </div>
       </div>
-      {!AO_VIVO && <div className="row" style={{ marginTop: 20, flexWrap: "wrap" }}>
+      {DEMO && <div className="row" style={{ marginTop: 20, flexWrap: "wrap" }}>
         <button className="btn btn-s btn-sm" onClick={() => go("err404")}>Ver página 404</button>
         <button className="btn btn-s btn-sm" onClick={() => go("errjob")}>Ver vaga encerrada</button>
         <button className="btn btn-s btn-sm" onClick={() => go("err500")}>Ver erro do servidor</button>
@@ -2601,8 +2625,8 @@ const Hub = ({ go, role, setRole }) => {
 
 const SemVagas = ({ ctx }) => (
   <div className="wrap" style={{ padding: "48px 24px" }}>
-    <div className="empty"><h3>Ainda não há vagas carregadas</h3>
-      <p style={{ marginTop: 8 }}>O robô de coleta está buscando vagas nas empresas monitoradas. Volte em alguns minutos.</p>
+    <div className="empty"><h3>Ainda não há vagas publicadas</h3>
+      <p style={{ marginTop: 8 }}>As empresas estão começando a entrar no Matchly. Assim que publicarem vagas, esta ferramenta passa a funcionar.</p>
       <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("feed")}>Ir para o feed</button></div>
   </div>
 );
@@ -3195,7 +3219,11 @@ function Companies({ ctx }) {
       <div className="chips" style={{ marginTop: 12 }}>
         {["Todas", "Com vagas abertas", "Verificadas"].map((x) => <button key={x} className="chip" data-on={so === x ? "1" : "0"} onClick={() => setSo(x)}>{x}</button>)}
       </div>
-      {lista.length === 0 && <div className="empty" style={{ marginTop: 22 }}><h3>Nenhuma empresa encontrada</h3><p style={{ marginTop: 8 }}>Tente outro nome ou cidade.</p></div>}
+      {COMPANIES.length === 0 ? (
+        <div className="empty" style={{ marginTop: 22 }}><h3>Nenhuma empresa cadastrada ainda</h3>
+          <p style={{ marginTop: 8 }}>O Matchly acabou de abrir. As empresas aparecem aqui conforme forem se cadastrando.</p>
+          <button className="btn btn-p btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("companyRegister")}>Cadastrar minha empresa</button></div>
+      ) : lista.length === 0 && <div className="empty" style={{ marginTop: 22 }}><h3>Nenhuma empresa encontrada</h3><p style={{ marginTop: 8 }}>Tente outro nome ou cidade.</p></div>}
       <div className="grid-cards" style={{ marginTop: 22 }}>
         {lista.slice(0, lim).map((c) => {
           const open = JOBS.filter((j) => j.companyId === c.id).length;
@@ -3307,7 +3335,7 @@ function CompanyRegister({ ctx }) {
       COMPANIES.unshift({ id, name: f.nome.trim(), sector: f.setor || "", size: f.tamanho, city: f.cidade ? `${f.cidade}/${f.uf}` : "", verified: false, pending: true,
         culture: [], logo, domain: dom, site: f.site, descricao: f.descricao, beneficios: f.beneficios });
       ctx.bumpJobs();
-      if (!AO_VIVO) ctx.say("Empresa cadastrada (modo demonstração).");
+      if (!AO_VIVO) ctx.say(DEMO ? "Empresa cadastrada (modo demonstração)." : "Empresa cadastrada só neste aparelho: o banco de dados ainda não foi ligado.");
       ctx.setCompanyOpen(id);
     } catch (e) { setErro(e.message); } finally { setEnviando(false); }
   };
@@ -3491,12 +3519,12 @@ function Notifications({ ctx }) {
 
 /* ------------------------------- CALENDÁRIO ----------------------------- */
 function Calendar({ ctx }) {
-  const events = { 12: [["mic", "Entrevista — Product Analyst, 14h"]], 15: [["clock", "Prazo de candidatura — Analista de Dados Pleno"]], 18: [["mic", "Segunda entrevista — Lar Digital, 10h"]], 22: [["calendar", "Lembrete: atualizar portfólio"]] };
+  const events = !DEMO ? {} : { 12: [["mic", "Entrevista — Product Analyst, 14h"]], 15: [["clock", "Prazo de candidatura — Analista de Dados Pleno"]], 18: [["mic", "Segunda entrevista — Lar Digital, 10h"]], 22: [["calendar", "Lembrete: atualizar portfólio"]] };
   const days = Array.from({ length: 30 }, (_, i) => i + 1);
   return (
     <div className="wrap" style={{ padding: "32px 24px 60px", maxWidth: 860 }}>
       <h2>Calendário</h2>
-      <p style={{ marginTop: 6 }}>Setembro de 2026 · entrevistas, prazos e lembretes em um lugar só.</p>
+      <p style={{ marginTop: 6 }}>{DEMO ? "Setembro de 2026" : new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" }).replace(/^./, (c) => c.toUpperCase())} · entrevistas, prazos e lembretes em um lugar só.</p>
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 }}>
           {["S", "T", "Q", "Q", "S", "S", "D"].map((d, i) => <div key={i} className="muted" style={{ textAlign: "center", paddingBottom: 6 }}>{d}</div>)}
@@ -3509,7 +3537,8 @@ function Calendar({ ctx }) {
         </div>
       </div>
       <h3 style={{ margin: "24px 0 12px" }}>Próximos eventos</h3>
-      <div className="card divide">
+      {Object.keys(events).length === 0 && <p className="muted">Nenhum evento ainda. Quando uma empresa marcar uma entrevista com você, ela aparece aqui.</p>}
+      <div className="card divide" style={Object.keys(events).length === 0 ? { display: "none" } : undefined}>
         {Object.entries(events).map(([d, list]) => list.map(([ic, t], i) => (
           <div key={d + i} className="row" style={{ padding: "12px 0" }}>
             <span style={{ color: "var(--wine)" }}><Ic n={ic} s={18} /></span>
@@ -3885,7 +3914,7 @@ function Recruiter({ ctx }) {
 
       {tab === "cands" && (
         <>
-          {AO_VIVO && <div className="note" style={{ marginBottom: 14 }}>Os candidatos abaixo são exemplos até o login de candidatos estar ligado ao banco de dados.</div>}
+          {CANDIDATES.length === 0 && <div className="empty" style={{ marginBottom: 16 }}><h3>Ainda não há candidatos</h3><p style={{ marginTop: 8 }}>Publique sua vaga. As pessoas que se cadastrarem e combinarem com ela vão aparecer aqui.</p></div>}
           <div className="card" style={{ marginBottom: 16 }}>
             {meus.length > 0 && (
               <Field label="Candidatos para a vaga">
@@ -4232,7 +4261,9 @@ function Assistant({ ctx }) {
   const answer = (q) => {
     const s = q.toLowerCase();
     const { profile: p, prefs, matches, feed } = ctx;
-    const top = feed[0], m = matches[top.id];
+    const top = feed[0], m = top ? matches[top.id] : null;
+    if (!top && !(s.includes("currículo") || s.includes("curriculo") || s.includes("entrevista")))
+      return "Ainda não há vagas publicadas. O Matchly acabou de abrir e as empresas estão começando a entrar. Enquanto isso, deixe seu currículo pronto: quando aparecer uma vaga para você, ela fica no seu painel.";
     if (s.includes("vaga") && (s.includes("combina") || s.includes("melhor")))
       return `Hoje a melhor é ${top.title} na ${companyOf(top.companyId).name}, com ${m.score}%. Pesa a favor: ${m.why[0] || "seu histórico na área"} A faixa é de ${money(top.sMin)} a ${money(top.sMax)}.`;
     if (s.includes("currículo") || s.includes("curriculo"))
@@ -4303,3 +4334,6 @@ function Assistant({ ctx }) {
     </>
   );
 }
+
+/* No site publicado não há dados de exemplo: tudo começa vazio. */
+if (!DEMO) { COMPANIES.length = 0; JOBS.length = 0; CANDIDATES.length = 0; }
