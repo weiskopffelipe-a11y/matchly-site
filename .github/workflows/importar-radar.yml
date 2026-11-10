@@ -1,0 +1,26 @@
+# Importa a lista de empresas monitoradas. Rode à mão depois de subir o radar.csv:
+# aba Actions → "Importar radar de empresas" → Run workflow.
+name: Importar radar de empresas
+
+on:
+  workflow_dispatch:
+    inputs:
+      arquivo:
+        description: "Nome do arquivo CSV na raiz do repositório"
+        default: "radar.csv"
+        required: true
+
+jobs:
+  importar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Importar empresas
+        run: node scripts/importar-radar.mjs "${{ inputs.arquivo }}"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
