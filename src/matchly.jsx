@@ -4535,7 +4535,7 @@ function Help({ ctx }) {
 }
 
 /* -------------------------------- DOAÇÕES ------------------------------- */
-const PIX_KEY = "contato@matchly.com.br";
+const PIX_KEY = "weiskopffelipe@gmail.com";
 function Donate({ ctx }) {
   const [copied, setCopied] = useState(false);
   const [amount, setAmount] = useState(20);
