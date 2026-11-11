@@ -133,6 +133,70 @@ create table if not exists candidaturas (
   unique (candidato_id, vaga_id)
 );
 create index if not exists candidaturas_vaga_idx on candidaturas (vaga_id, criada_em desc);
+create index if not exists candidaturas_candidato_idx on candidaturas (candidato_id);
+alter table candidatos add column if not exists perfil jsonb not null default '{}';  -- perfil e preferências, para entrar em outro aparelho
+
+-- ---------------------------------------------------------------------
+-- ACESSOS: cada aparelho tem a sua chave (um dono pode ter vários aparelhos)
+-- CONTAS: entrar em outro aparelho com o WhatsApp (ou e-mail) + senha de 6 números
+-- ---------------------------------------------------------------------
+create table if not exists acessos (
+  token_hash text primary key,
+  dono_tipo  text not null check (dono_tipo in ('empresa', 'candidato')),
+  dono_id    uuid not null,
+  criado_em  timestamptz not null default now()
+);
+create index if not exists acessos_dono_idx on acessos (dono_tipo, dono_id);
+
+create table if not exists contas (
+  id            uuid primary key default gen_random_uuid(),
+  login         text not null,                -- só os números do celular, ou o e-mail em minúsculas
+  dono_tipo     text not null check (dono_tipo in ('empresa', 'candidato')),
+  dono_id       uuid not null,
+  senha_hash    text not null,                -- scrypt com sal; a senha nunca é guardada
+  falhas        int not null default 0,
+  bloqueada_ate timestamptz,
+  criada_em     timestamptz not null default now(),
+  unique (login, dono_tipo),
+  unique (dono_tipo, dono_id)
+);
+
+-- ---------------------------------------------------------------------
+-- AVALIAÇÕES: só existem depois de uma contratação de verdade pelo Matchly
+-- de = 'candidato' → o trabalhador avaliou a empresa (aparece na página da empresa)
+-- de = 'empresa'   → quem contratou avaliou o trabalhador (aparece para outras empresas)
+-- ---------------------------------------------------------------------
+create table if not exists avaliacoes (
+  id             uuid primary key default gen_random_uuid(),
+  candidatura_id uuid not null references candidaturas(id) on delete cascade,
+  de             text not null check (de in ('empresa', 'candidato')),
+  empresa_id     uuid not null references empresas(id) on delete cascade,
+  candidato_id   uuid not null references candidatos(id) on delete cascade,
+  nota           int not null check (nota between 1 and 5),
+  comentario     text,
+  criada_em      timestamptz not null default now(),
+  unique (candidatura_id, de)
+);
+create index if not exists avaliacoes_empresa_idx on avaliacoes (empresa_id, de);
+create index if not exists avaliacoes_candidato_idx on avaliacoes (candidato_id, de);
+
+-- ---------------------------------------------------------------------
+-- AVISOS NO CELULAR (Web Push) e configurações do servidor
+-- ---------------------------------------------------------------------
+create table if not exists push_inscricoes (
+  endpoint  text primary key,
+  dono_tipo text not null check (dono_tipo in ('empresa', 'candidato')),
+  dono_id   uuid not null,
+  p256dh    text not null,
+  auth      text not null,
+  criada_em timestamptz not null default now()
+);
+create index if not exists push_dono_idx on push_inscricoes (dono_tipo, dono_id);
+
+create table if not exists config (
+  chave text primary key,
+  valor text not null
+);
 
 create table if not exists denuncias (
   id         uuid primary key default gen_random_uuid(),
@@ -167,6 +231,11 @@ alter table empresas     enable row level security;
 alter table fontes       enable row level security;
 alter table vagas        enable row level security;
 alter table candidatos   enable row level security;
+alter table acessos      enable row level security;
+alter table contas       enable row level security;
+alter table avaliacoes   enable row level security;
+alter table push_inscricoes enable row level security;
+alter table config       enable row level security;
 alter table candidaturas enable row level security;
 alter table denuncias    enable row level security;
 alter table coletas      enable row level security;
@@ -181,7 +250,7 @@ grant select (id, nome, dominio, site, logo_url, setor, cidade, uf, tamanho, des
 drop policy if exists "vagas ativas" on vagas;
 create policy "vagas ativas" on vagas for select to anon, authenticated using (ativa and not suspeita);
 
--- candidatos e candidaturas: nenhuma política pública. Só a /api (chave secreta) lê e grava,
+-- candidatos, candidaturas, acessos, contas, avaliações, avisos e config: nenhuma política pública. Só a /api (chave secreta) lê e grava,
 -- e ela confere a chave de acesso de quem pede.
 
 drop policy if exists "qualquer um denuncia" on denuncias;
@@ -211,6 +280,13 @@ revoke all on painel from anon, authenticated;
 -- limpa os dados do teste de instalação (10/11/2026)
 delete from empresas   where origem = 'cadastro' and nome in ('TESTE Matchly', 'TESTE Matchly 2');
 delete from candidatos where nome = 'TESTE Trabalhador';
+-- acessos, contas e avisos de quem já foi apagado
+delete from acessos a where not exists (select 1 from empresas e where a.dono_tipo = 'empresa' and e.id = a.dono_id)
+                        and not exists (select 1 from candidatos c where a.dono_tipo = 'candidato' and c.id = a.dono_id);
+delete from contas a where not exists (select 1 from empresas e where a.dono_tipo = 'empresa' and e.id = a.dono_id)
+                       and not exists (select 1 from candidatos c where a.dono_tipo = 'candidato' and c.id = a.dono_id);
+delete from push_inscricoes a where not exists (select 1 from empresas e where a.dono_tipo = 'empresa' and e.id = a.dono_id)
+                                and not exists (select 1 from candidatos c where a.dono_tipo = 'candidato' and c.id = a.dono_id);
 
 -- avisa a API do Supabase que as tabelas mudaram
 notify pgrst, 'reload schema';

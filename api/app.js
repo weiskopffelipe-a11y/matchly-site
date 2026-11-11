@@ -1,24 +1,23 @@
 // =====================================================================
-// MATCHLY — /api/app  (vagas, candidaturas e área de quem contrata)
+// MATCHLY — /api/app  (vagas, candidaturas, contas, avaliações e avisos)
 // Roda na Vercel com a chave secreta do Supabase, que nunca vai para o navegador.
 //
-//   GET  /api/app?acao=status        → o banco está ligado?
-//   GET  /api/app?acao=vagas         → vagas no ar (para o feed)
-//   POST /api/app?acao=publicar      → quem contrata publica uma vaga (cria o acesso na primeira vez)
-//   POST /api/app?acao=painel        → candidaturas recebidas (quem contrata)
-//   POST /api/app?acao=etapa         → quem contrata muda a etapa de uma candidatura
-//   POST /api/app?acao=vista         → marca candidaturas como vistas
-//   POST /api/app?acao=encerrar      → tira uma vaga do ar
-//   POST /api/app?acao=candidatar    → o trabalhador envia o currículo para uma vaga
-//   POST /api/app?acao=minhas        → o trabalhador vê em que etapa estão as candidaturas dele
+//   GET  ?acao=status | vagas | avaliacoes&empresa=ID | push_chave
+//   POST ?acao=publicar | painel | etapa | vista | encerrar          (quem contrata)
+//        ?acao=cadastro | salvar_perfil | candidatar | minhas         (quem procura trabalho)
+//        ?acao=entrar | definir_senha                                (celular + senha de 6 números)
+//        ?acao=avaliar                                               (estrelas depois da contratação)
+//        ?acao=inscrever                                             (avisos no celular)
 //
-// Acesso sem senha: cada contratante e cada trabalhador recebe uma chave aleatória
-// (guardada no aparelho). No banco fica só o "hash" dela.
+// Acesso: cada aparelho recebe uma chave aleatória (no banco fica só o hash).
+// Para entrar em outro aparelho: celular (ou e-mail) + senha de 6 números.
 // =====================================================================
 import crypto from "node:crypto";
+import { gerarChaves, enviarPush } from "../lib/push.js";
 
 const SUPA = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
 const CHAVE = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "";
+const SITE = process.env.SITE_URL || "https://matchly-site.vercel.app";
 
 const cabecalhoChave = (k) => (k.startsWith("eyJ") ? { apikey: k, Authorization: `Bearer ${k}` } : { apikey: k });
 const db = async (caminho, { method = "GET", body, prefer } = {}) => {
@@ -38,16 +37,19 @@ const limpa = (s, n = 300) => String(s ?? "").replace(/[<>]/g, "").trim().slice(
 const lista = (a, n = 20, m = 60) => (Array.isArray(a) ? a.slice(0, n).map((x) => limpa(x, m)).filter(Boolean) : []);
 const num = (v) => { const x = Number(v); return Number.isFinite(x) && x >= 0 && x < 1e7 ? x : null; };
 const uuid = (v) => /^[0-9a-f-]{36}$/i.test(String(v || ""));
+const sai = (res, status, dados) => res.status(status).json(dados);
 
 const CONTRATOS = ["CLT", "PJ", "Temporário", "Estágio", "Aprendiz", "Freelancer", "Diária", "Por hora"];
 const UNIDADES = ["/hora", "/dia", "/mês"];
 const ETAPAS = ["Candidatura enviada", "Entrevista", "Contratada", "Recusada"];
+const PAPEIS = ["empresa", "candidato"];
 // vaga que pede dinheiro do candidato vai para revisão em vez de ir ao ar
 const PEDE_DINHEIRO = /(pagar|pague|pagamento|taxa|dep[oó]sito|pix|boleto|investimento).{0,40}(inscri|curso|material|uniforme|cadastro|exame|kit|treinamento|vaga)/i;
 
 // limite simples contra abuso (por instância): N chamadas por IP e por ação a cada hora
 const usos = new Map();
-const LIMITES = { publicar: 20, candidatar: 40, etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400 };
+const LIMITES = { publicar: 20, candidatar: 40, cadastro: 10, entrar: 30, definir_senha: 20, avaliar: 60, inscrever: 30,
+  etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400, salvar_perfil: 300 };
 function excedeu(req, acao) {
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "?";
   const k = `${acao}:${ip}`;
@@ -56,18 +58,73 @@ function excedeu(req, acao) {
   return janela.length > (LIMITES[acao] || 200);
 }
 
-async function empresaDoToken(token) {
-  if (!token || String(token).length < 20) return null;
-  const r = await db(`empresas?select=id,nome,tipo,setor,cidade,uf,logo_url,verificada&token_hash=eq.${hash(token)}&limit=1`);
-  return r[0] || null;
+// ------------------------------------------------------------------ acesso
+async function criarAcesso(tipo, id) {
+  const token = novoToken();
+  await db("acessos", { method: "POST", prefer: "return=minimal", body: { token_hash: hash(token), dono_tipo: tipo, dono_id: id } });
+  return token;
 }
-async function candidatoDoToken(token) {
+async function donoDoToken(token, tipo) {
   if (!token || String(token).length < 20) return null;
-  const r = await db(`candidatos?select=id,nome&token_hash=eq.${hash(token)}&limit=1`);
-  return r[0] || null;
+  const h = hash(token);
+  const tabela = tipo === "empresa" ? "empresas" : "candidatos";
+  const campos = tipo === "empresa" ? "id,nome,tipo,setor,cidade,uf,logo_url,verificada,telefone,email_contato" : "id,nome,telefone,cidade";
+  const [a] = await db(`acessos?select=dono_id&token_hash=eq.${h}&dono_tipo=eq.${tipo}&limit=1`);
+  const filtro = a ? `id=eq.${a.dono_id}` : `token_hash=eq.${h}`;   // chaves antigas ficavam na própria linha
+  const [r] = await db(`${tabela}?select=${campos}&${filtro}&limit=1`);
+  return r || null;
+}
+const empresaDoToken = (t) => donoDoToken(t, "empresa");
+const candidatoDoToken = (t) => donoDoToken(t, "candidato");
+
+// ------------------------------------------------------------------ senha de 6 números
+const normalizaLogin = (v) => { const s = String(v || "").trim().toLowerCase(); if (s.includes("@")) return /^\S+@\S+\.\S+$/.test(s) ? s : ""; const d = s.replace(/\D/g, ""); return d.length >= 10 && d.length <= 13 ? d.replace(/^55(?=\d{10,11}$)/, "") : ""; };
+const senhaValida = (s) => /^\d{6}$/.test(String(s || ""));
+const fazSenha = (s) => { const sal = crypto.randomBytes(16).toString("hex"); return `${sal}:${crypto.scryptSync(String(s), sal, 32).toString("hex")}`; };
+const confere = (s, guardada) => { const [sal, h] = String(guardada).split(":"); if (!sal || !h) return false; const x = crypto.scryptSync(String(s), sal, 32); return crypto.timingSafeEqual(x, Buffer.from(h, "hex")); };
+async function definirSenha(tipo, donoId, login, senha) {
+  const [outra] = await db(`contas?select=id,dono_id&login=eq.${encodeURIComponent(login)}&dono_tipo=eq.${tipo}&limit=1`);
+  if (outra && outra.dono_id !== donoId) { const e = new Error("login em uso"); e.status = 409; throw e; }
+  const [minha] = await db(`contas?select=id&dono_id=eq.${donoId}&dono_tipo=eq.${tipo}&limit=1`);
+  const dados = { login, senha_hash: fazSenha(senha), falhas: 0, bloqueada_ate: null };
+  if (minha) await db(`contas?id=eq.${minha.id}`, { method: "PATCH", body: dados });
+  else await db("contas", { method: "POST", prefer: "return=minimal", body: { ...dados, dono_tipo: tipo, dono_id: donoId } });
 }
 
-const sai = (res, status, dados) => res.status(status).json(dados);
+// ------------------------------------------------------------------ avisos
+async function chavesPush() {
+  const [c] = await db("config?select=valor&chave=eq.vapid&limit=1");
+  if (c) return JSON.parse(c.valor);
+  const novas = gerarChaves();
+  await db("config?on_conflict=chave", { method: "POST", prefer: "resolution=ignore-duplicates,return=minimal", body: [{ chave: "vapid", valor: JSON.stringify(novas) }] });
+  const [g] = await db("config?select=valor&chave=eq.vapid&limit=1");   // se duas instâncias criaram ao mesmo tempo, vale a gravada
+  return JSON.parse(g.valor);
+}
+async function avisar(tipo, donoId, dados) {
+  try {
+    const inscricoes = await db(`push_inscricoes?select=endpoint,p256dh,auth&dono_tipo=eq.${tipo}&dono_id=eq.${donoId}&limit=10`);
+    if (!inscricoes.length) return;
+    const chaves = await chavesPush();
+    await Promise.all(inscricoes.map(async (i) => {
+      const st = await enviarPush({ endpoint: i.endpoint, keys: { p256dh: i.p256dh, auth: i.auth } }, dados, chaves, SITE).catch(() => 0);
+      if (st === 404 || st === 410) await db(`push_inscricoes?endpoint=eq.${encodeURIComponent(i.endpoint)}`, { method: "DELETE" }).catch(() => {});
+    }));
+  } catch (e) { console.error("aviso", e.message); }
+}
+// e-mail opcional (só funciona se RESEND_API_KEY e EMAIL_REMETENTE estiverem configurados na Vercel)
+async function email(para, assunto, html) {
+  if (!para || !process.env.RESEND_API_KEY || !process.env.EMAIL_REMETENTE) return;
+  await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: process.env.EMAIL_REMETENTE, to: para, subject: assunto, html }) }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ avaliações
+const resumo = (notas) => (notas.length ? { media: Math.round((notas.reduce((a, n) => a + n, 0) / notas.length) * 10) / 10, total: notas.length } : null);
+function agrupar(linhas, campo) {
+  const m = {};
+  linhas.forEach((a) => { (m[a[campo]] ||= []).push(a.nota); });
+  return Object.fromEntries(Object.entries(m).map(([k, v]) => [k, resumo(v)]));
+}
 
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
@@ -79,9 +136,9 @@ export default async function handler(req, res) {
   d = d && typeof d === "object" ? d : {};
 
   try {
-    // ------------------------------------------------------------------ leitura pública
+    // ================================================================ leitura pública
     if (acao === "status") {
-      const ok = await db("candidatos?select=id&limit=1").then(() => true).catch(() => false);
+      const ok = await db("avaliacoes?select=id&limit=1").then(() => true).catch(() => false);
       return sai(res, 200, { banco: true, tabelas: ok });
     }
 
@@ -89,38 +146,97 @@ export default async function handler(req, res) {
       const rows = await db("vagas?select=id,empresa_id,origem,titulo,descricao,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,escolaridade,exige_experiencia,area,habilidades,beneficios,url,fonte_nome,publicada_em,coletada_em,particular," +
         "empresas(id,nome,dominio,site,logo_url,setor,cidade,uf,tamanho,descricao,beneficios,verificada,tipo)" +
         "&ativa=eq.true&suspeita=eq.false&order=publicada_em.desc.nullslast&limit=1500");
+      const ids = [...new Set(rows.map((v) => v.empresa_id).filter(Boolean))];
+      const notas = ids.length ? await db(`avaliacoes?select=empresa_id,nota&de=eq.candidato&empresa_id=in.(${ids.join(",")})&limit=20000`) : [];
       // vaga nova aparece em poucos segundos: o cache da Vercel guarda a lista por 5s no máximo
       res.setHeader("Cache-Control", "s-maxage=5, stale-while-revalidate=5");
-      return sai(res, 200, { vagas: rows, empresas: new Set(rows.map((v) => v.empresa_id)).size });
+      return sai(res, 200, { vagas: rows, empresas: ids.length, avaliacoes: agrupar(notas, "empresa_id") });
+    }
+
+    if (acao === "avaliacoes") {
+      if (!uuid(req.query.empresa)) return sai(res, 400, { erro: "Empresa inválida." });
+      const itens = await db(`avaliacoes?select=nota,comentario,criada_em,candidaturas(vagas(titulo))&de=eq.candidato&empresa_id=eq.${req.query.empresa}&order=criada_em.desc&limit=100`);
+      res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
+      return sai(res, 200, { resumo: resumo(itens.map((i) => i.nota)),
+        itens: itens.map((i) => ({ nota: i.nota, comentario: i.comentario, criada_em: i.criada_em, vaga: i.candidaturas?.vagas?.titulo || "" })) });
+    }
+
+    if (acao === "push_chave") {
+      res.setHeader("Cache-Control", "s-maxage=3600");
+      return sai(res, 200, { chave: (await chavesPush()).publica });
     }
 
     if (req.method !== "POST") return sai(res, 405, { erro: "Use POST." });
     if (excedeu(req, acao)) return sai(res, 429, { erro: "Muitas tentativas seguidas. Espere um pouco e tente de novo." });
 
-    // ------------------------------------------------------------------ quem contrata
+    // ================================================================ entrar em outro aparelho
+    if (acao === "entrar") {
+      const tipo = PAPEIS.includes(d.papel) ? d.papel : null;
+      const login = normalizaLogin(d.login);
+      if (!tipo || !login) return sai(res, 400, { erro: "Digite o seu WhatsApp com DDD." });
+      if (!senhaValida(d.senha)) return sai(res, 400, { erro: "A senha tem 6 números." });
+      const [conta] = await db(`contas?select=id,dono_id,senha_hash,falhas,bloqueada_ate&login=eq.${encodeURIComponent(login)}&dono_tipo=eq.${tipo}&limit=1`);
+      if (!conta) return sai(res, 404, { erro: tipo === "empresa" ? "Não achamos esse contato. Confira o número ou publique sua primeira vaga." : "Não achamos esse número. Confira ou faça o seu cadastro." });
+      if (conta.bloqueada_ate && new Date(conta.bloqueada_ate) > new Date())
+        return sai(res, 429, { erro: "Muitas senhas erradas. Por segurança, espere 15 minutos e tente de novo." });
+      if (!confere(d.senha, conta.senha_hash)) {
+        const falhas = (conta.falhas || 0) + 1;
+        await db(`contas?id=eq.${conta.id}`, { method: "PATCH", body: falhas >= 5 ? { falhas: 0, bloqueada_ate: new Date(Date.now() + 15 * 60_000).toISOString() } : { falhas } });
+        return sai(res, 401, { erro: falhas >= 5 ? "Muitas senhas erradas. Espere 15 minutos." : `Senha errada. Você ainda tem ${5 - falhas} tentativa(s).` });
+      }
+      await db(`contas?id=eq.${conta.id}`, { method: "PATCH", body: { falhas: 0, bloqueada_ate: null } });
+      const token = await criarAcesso(tipo, conta.dono_id);
+      if (tipo === "candidato") {
+        const [c] = await db(`candidatos?select=nome,perfil&id=eq.${conta.dono_id}&limit=1`);
+        return sai(res, 200, { token, nome: c?.nome, perfil: c?.perfil || {} });
+      }
+      const [e] = await db(`empresas?select=nome&id=eq.${conta.dono_id}&limit=1`);
+      return sai(res, 200, { token, nome: e?.nome });
+    }
+
+    if (acao === "definir_senha") {
+      const tipo = PAPEIS.includes(d.papel) ? d.papel : null;
+      const dono = tipo ? await donoDoToken(d.token, tipo) : null;
+      if (!dono) return sai(res, 401, { erro: "Acesso não encontrado." });
+      const login = normalizaLogin(d.login);
+      if (!login) return sai(res, 400, { erro: "Digite um WhatsApp com DDD (ou um e-mail)." });
+      if (!senhaValida(d.senha)) return sai(res, 400, { erro: "A senha precisa ter 6 números." });
+      try { await definirSenha(tipo, dono.id, login, d.senha); }
+      catch (e) { if (e.status === 409) return sai(res, 409, { erro: "Esse número já é usado por outra conta." }); throw e; }
+      return sai(res, 200, { ok: true, login });
+    }
+
+    // ================================================================ quem contrata
     if (acao === "publicar") {
       const c = d.contratante || {}, v = d.vaga || {};
       let empresa = null, token = null;
       if (d.token) {
         empresa = await empresaDoToken(d.token);
-        if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Abra de novo o link de acesso que você guardou." });
+        if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Entre com seu WhatsApp e senha." });
       }
       const titulo = limpa(v.titulo, 120);
       if (!titulo) return sai(res, 400, { erro: "Diga qual é a função ou o serviço." });
       if (!empresa) {
         const nome = limpa(c.nome, 160);
         if (!nome) return sai(res, 400, { erro: "Informe seu nome ou o nome da empresa." });
-        if (!limpa(c.contato)) return sai(res, 400, { erro: "Informe um telefone ou e-mail de contato." });
-        const pessoa = c.tipo === "Pessoa";
-        token = novoToken();
         const contato = limpa(c.contato, 160);
+        const login = normalizaLogin(contato);
+        if (!login) return sai(res, 400, { erro: "Informe um WhatsApp com DDD ou um e-mail." });
+        if (d.senha !== undefined && !senhaValida(d.senha)) return sai(res, 400, { erro: "A senha precisa ter 6 números." });
+        if (d.senha) {
+          const [existe] = await db(`contas?select=id&login=eq.${encodeURIComponent(login)}&dono_tipo=eq.empresa&limit=1`);
+          if (existe) return sai(res, 409, { erro: "Esse contato já tem conta. Toque em Entrar e use sua senha." });
+        }
+        const pessoa = c.tipo === "Pessoa";
         [empresa] = await db("empresas", { method: "POST", prefer: "return=representation", body: {
           nome, tipo: pessoa ? "pessoa" : "empresa",
           setor: pessoa ? "Contratante particular" : (limpa(c.setor, 80) || "Empresa"),
           cidade: limpa(c.cidade, 80) || null, uf: limpa(c.uf, 2).toUpperCase() || null,
-          telefone: /@/.test(contato) ? null : contato, email_contato: /@/.test(contato) ? contato : null,
-          responsavel: pessoa ? nome : null, origem: "cadastro", verificada: false, token_hash: hash(token),
+          telefone: login.includes("@") ? null : contato, email_contato: login.includes("@") ? login : null,
+          responsavel: pessoa ? nome : null, origem: "cadastro", verificada: false,
         } });
+        token = await criarAcesso("empresa", empresa.id);
+        if (d.senha) await definirSenha("empresa", empresa.id, login, d.senha);
       }
       const sMin = num(v.salario_min), sMax = num(v.salario_max);
       const descricao = limpa(v.descricao, 5000);
@@ -138,20 +254,31 @@ export default async function handler(req, res) {
         particular: empresa.tipo === "pessoa", publicada_em: new Date().toISOString(), ativa: true,
         suspeita, motivos_suspeita: suspeita ? ["Pede pagamento do candidato"] : [],
       } });
-      return sai(res, 201, { token, empresa, vaga, revisao: suspeita });
+      return sai(res, 201, { token, empresa: { id: empresa.id, nome: empresa.nome }, vaga, revisao: suspeita });
     }
 
     if (["painel", "etapa", "vista", "encerrar"].includes(acao)) {
       const empresa = await empresaDoToken(d.token);
-      if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Abra de novo o link de acesso que você guardou." });
+      if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Entre com seu WhatsApp e senha." });
       const vagas = await db(`vagas?select=id,titulo,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,habilidades,area,escolaridade,exige_experiencia,descricao,ativa,suspeita,publicada_em,particular&empresa_id=eq.${empresa.id}&order=publicada_em.desc.nullslast`);
       const ids = vagas.map((v) => v.id);
 
       if (acao === "painel") {
         const candidaturas = ids.length
-          ? await db(`candidaturas?select=id,vaga_id,etapa,mensagem,curriculo,vista,criada_em,atualizada_em,candidatos(id,nome,cidade)&vaga_id=in.(${ids.join(",")})&order=criada_em.desc&limit=2000`)
+          ? await db(`candidaturas?select=id,vaga_id,candidato_id,etapa,mensagem,curriculo,vista,criada_em,atualizada_em,candidatos(id,nome,cidade)&vaga_id=in.(${ids.join(",")})&order=criada_em.desc&limit=2000`)
           : [];
-        return sai(res, 200, { empresa, vagas, candidaturas });
+        const cids = [...new Set(candidaturas.map((c) => c.candidato_id))];
+        const notasCand = cids.length ? await db(`avaliacoes?select=candidato_id,nota&de=eq.empresa&candidato_id=in.(${cids.join(",")})&limit=20000`) : [];
+        const dadas = await db(`avaliacoes?select=candidatura_id,nota&de=eq.empresa&empresa_id=eq.${empresa.id}&limit=5000`);
+        const recebidas = await db(`avaliacoes?select=nota&de=eq.candidato&empresa_id=eq.${empresa.id}&limit=5000`);
+        const [conta] = await db(`contas?select=login&dono_tipo=eq.empresa&dono_id=eq.${empresa.id}&limit=1`);
+        const notaCand = agrupar(notasCand, "candidato_id");
+        const dadaPor = Object.fromEntries(dadas.map((a) => [a.candidatura_id, a.nota]));
+        return sai(res, 200, {
+          empresa: { id: empresa.id, nome: empresa.nome, tipo: empresa.tipo, cidade: empresa.cidade, verificada: empresa.verificada },
+          conta: conta ? { login: conta.login } : null, avaliacao: resumo(recebidas.map((a) => a.nota)),
+          vagas, candidaturas: candidaturas.map((c) => ({ ...c, nota_candidato: notaCand[c.candidato_id] || null, minha_avaliacao: dadaPor[c.id] || null })),
+        });
       }
       if (acao === "encerrar") {
         if (!ids.includes(d.vagaId)) return sai(res, 404, { erro: "Vaga não encontrada." });
@@ -161,7 +288,13 @@ export default async function handler(req, res) {
       if (!ids.length) return sai(res, 404, { erro: "Candidatura não encontrada." });
       if (acao === "vista") {
         const alvo = (Array.isArray(d.ids) ? d.ids : []).filter(uuid).slice(0, 200);
-        if (alvo.length) await db(`candidaturas?id=in.(${alvo.join(",")})&vaga_id=in.(${ids.join(",")})`, { method: "PATCH", body: { vista: true } });
+        if (alvo.length) {
+          const marcadas = await db(`candidaturas?id=in.(${alvo.join(",")})&vaga_id=in.(${ids.join(",")})&vista=eq.false`, { method: "PATCH", prefer: "return=representation", body: { vista: true } });
+          for (const c of marcadas) {
+            const v = vagas.find((x) => x.id === c.vaga_id);
+            await avisar("candidato", c.candidato_id, { title: `${empresa.nome} viu seu currículo`, body: `Vaga: ${v?.titulo || ""}`, url: "/#candidaturas" });
+          }
+        }
         return sai(res, 200, { ok: true });
       }
       if (acao === "etapa") {
@@ -169,14 +302,48 @@ export default async function handler(req, res) {
         const r = await db(`candidaturas?id=eq.${d.id}&vaga_id=in.(${ids.join(",")})`, { method: "PATCH", prefer: "return=representation",
           body: { etapa: d.etapa, vista: true, atualizada_em: new Date().toISOString() } });
         if (!r.length) return sai(res, 404, { erro: "Candidatura não encontrada." });
+        const v = vagas.find((x) => x.id === r[0].vaga_id);
+        const textos = { Entrevista: [`${empresa.nome} quer conversar com você`, "Fique de olho no seu WhatsApp."],
+          Contratada: [`Você foi contratado(a) por ${empresa.nome}!`, "Depois do serviço, conte como foi: avalie a empresa no Matchly."],
+          Recusada: [`${empresa.nome} seguiu com outra pessoa`, "Continue se candidatando. Outras vagas vão aparecer."] };
+        if (textos[d.etapa]) await avisar("candidato", r[0].candidato_id, { title: textos[d.etapa][0], body: `${v?.titulo ? `Vaga: ${v.titulo}. ` : ""}${textos[d.etapa][1]}`, url: "/#candidaturas" });
         return sai(res, 200, { ok: true, candidatura: r[0] });
       }
     }
 
-    // ------------------------------------------------------------------ quem procura trabalho
+    // ================================================================ quem procura trabalho
+    if (acao === "cadastro") {
+      const p = d.perfil && typeof d.perfil === "object" ? d.perfil : {};
+      if (JSON.stringify(p).length > 100_000) return sai(res, 400, { erro: "Perfil grande demais." });
+      const nome = limpa(p.profile?.name, 120);
+      if (!nome) return sai(res, 400, { erro: "Falta o seu nome." });
+      const login = normalizaLogin(d.login || p.profile?.phone);
+      if (d.senha && (!login || !senhaValida(d.senha))) return sai(res, 400, { erro: "Confira o WhatsApp e a senha de 6 números." });
+      if (d.senha) {
+        const [existe] = await db(`contas?select=id&login=eq.${encodeURIComponent(login)}&dono_tipo=eq.candidato&limit=1`);
+        if (existe) return sai(res, 409, { erro: "Esse WhatsApp já tem cadastro no Matchly. Toque em Entrar e use a sua senha." });
+      }
+      const [c] = await db("candidatos", { method: "POST", prefer: "return=representation", body: {
+        nome, telefone: limpa(p.profile?.phone, 30) || null, cidade: limpa(p.profile?.city, 80) || null, perfil: p, curriculo: {},
+      } });
+      const token = await criarAcesso("candidato", c.id);
+      if (d.senha) await definirSenha("candidato", c.id, login, d.senha);
+      return sai(res, 201, { token, conta: !!d.senha });
+    }
+
+    if (acao === "salvar_perfil") {
+      const c = await candidatoDoToken(d.token);
+      if (!c) return sai(res, 401, { erro: "Acesso não encontrado." });
+      const p = d.perfil && typeof d.perfil === "object" ? d.perfil : null;
+      if (!p || JSON.stringify(p).length > 100_000) return sai(res, 400, { erro: "Perfil inválido." });
+      await db(`candidatos?id=eq.${c.id}`, { method: "PATCH", body: { perfil: p, nome: limpa(p.profile?.name, 120) || c.nome,
+        telefone: limpa(p.profile?.phone, 30) || null, cidade: limpa(p.profile?.city, 80) || null, atualizado_em: new Date().toISOString() } });
+      return sai(res, 200, { ok: true });
+    }
+
     if (acao === "candidatar") {
       if (!uuid(d.vagaId)) return sai(res, 400, { erro: "Vaga inválida." });
-      const [vaga] = await db(`vagas?select=id,origem,ativa,suspeita&id=eq.${d.vagaId}&limit=1`);
+      const [vaga] = await db(`vagas?select=id,titulo,origem,ativa,suspeita,empresa_id,empresas(nome,email_contato)&id=eq.${d.vagaId}&limit=1`);
       if (!vaga || !vaga.ativa || vaga.suspeita) return sai(res, 404, { erro: "Esta vaga não está mais no ar." });
       if (vaga.origem !== "matchly") return sai(res, 400, { erro: "Esta vaga recebe candidaturas no site da empresa." });
       const curriculo = d.curriculo && typeof d.curriculo === "object" ? d.curriculo : {};
@@ -190,13 +357,17 @@ export default async function handler(req, res) {
         curriculo, atualizado_em: new Date().toISOString() };
       if (candidato) await db(`candidatos?id=eq.${candidato.id}`, { method: "PATCH", body: dados });
       else {
-        token = novoToken();
-        [candidato] = await db("candidatos", { method: "POST", prefer: "return=representation", body: { ...dados, token_hash: hash(token) } });
+        [candidato] = await db("candidatos", { method: "POST", prefer: "return=representation", body: dados });
+        token = await criarAcesso("candidato", candidato.id);
       }
       try {
         const [cand] = await db("candidaturas", { method: "POST", prefer: "return=representation", body: {
           candidato_id: candidato.id, vaga_id: vaga.id, curriculo, mensagem: limpa(d.mensagem, 600) || null,
         } });
+        const primeiro = nome.split(" ")[0];
+        await avisar("empresa", vaga.empresa_id, { title: `Nova candidatura: ${primeiro}`, body: `Para a vaga de ${vaga.titulo}. Toque para ver o currículo.`, url: "/#area" });
+        await email(vaga.empresas?.email_contato, `Nova candidatura para ${vaga.titulo}`,
+          `<p>${primeiro} enviou o currículo para a vaga <b>${vaga.titulo}</b>.</p><p><a href="${SITE}/#area">Ver no Matchly</a></p>`);
         return sai(res, 201, { token, candidatura: { id: cand.id, etapa: cand.etapa, criada_em: cand.criada_em } });
       } catch (e) {
         if (e.status === 409) return sai(res, 409, { token, erro: "Você já se candidatou a esta vaga." });
@@ -207,8 +378,45 @@ export default async function handler(req, res) {
     if (acao === "minhas") {
       const candidato = await candidatoDoToken(d.token);
       if (!candidato) return sai(res, 401, { erro: "Acesso não encontrado." });
-      const candidaturas = await db(`candidaturas?select=id,vaga_id,etapa,vista,criada_em,atualizada_em&candidato_id=eq.${candidato.id}&order=criada_em.desc`);
-      return sai(res, 200, { candidaturas });
+      const candidaturas = await db(`candidaturas?select=id,vaga_id,etapa,vista,criada_em,atualizada_em,vagas(titulo,empresa_id,empresas(nome))&candidato_id=eq.${candidato.id}&order=criada_em.desc`);
+      const dadas = await db(`avaliacoes?select=candidatura_id,nota&de=eq.candidato&candidato_id=eq.${candidato.id}&limit=2000`);
+      const [conta] = await db(`contas?select=login&dono_tipo=eq.candidato&dono_id=eq.${candidato.id}&limit=1`);
+      const dadaPor = Object.fromEntries(dadas.map((a) => [a.candidatura_id, a.nota]));
+      return sai(res, 200, { conta: conta ? { login: conta.login } : null,
+        candidaturas: candidaturas.map((c) => ({ id: c.id, vaga_id: c.vaga_id, etapa: c.etapa, vista: c.vista, criada_em: c.criada_em, atualizada_em: c.atualizada_em,
+          vaga: c.vagas?.titulo || "", empresa: c.vagas?.empresas?.nome || "", minha_avaliacao: dadaPor[c.id] || null })) });
+    }
+
+    // ================================================================ avaliações (só depois de contratar)
+    if (acao === "avaliar") {
+      const tipo = PAPEIS.includes(d.papel) ? d.papel : null;
+      const dono = tipo ? await donoDoToken(d.token, tipo) : null;
+      if (!dono) return sai(res, 401, { erro: "Acesso não encontrado." });
+      const nota = Math.round(Number(d.nota));
+      if (!uuid(d.candidaturaId) || !(nota >= 1 && nota <= 5)) return sai(res, 400, { erro: "Escolha de 1 a 5 estrelas." });
+      const [c] = await db(`candidaturas?select=id,etapa,candidato_id,vagas(empresa_id)&id=eq.${d.candidaturaId}&limit=1`);
+      const empresaId = c?.vagas?.empresa_id;
+      if (!c || (tipo === "candidato" && c.candidato_id !== dono.id) || (tipo === "empresa" && empresaId !== dono.id))
+        return sai(res, 404, { erro: "Candidatura não encontrada." });
+      if (c.etapa !== "Contratada") return sai(res, 400, { erro: "Dá para avaliar depois que a contratação acontece." });
+      await db("avaliacoes?on_conflict=candidatura_id,de", { method: "POST", prefer: "resolution=merge-duplicates,return=minimal", body: [{
+        candidatura_id: c.id, de: tipo, empresa_id: empresaId, candidato_id: c.candidato_id, nota, comentario: limpa(d.comentario, 400) || null,
+      }] });
+      return sai(res, 200, { ok: true });
+    }
+
+    // ================================================================ avisos no celular
+    if (acao === "inscrever") {
+      const tipo = PAPEIS.includes(d.papel) ? d.papel : null;
+      const dono = tipo ? await donoDoToken(d.token, tipo) : null;
+      if (!dono) return sai(res, 401, { erro: "Acesso não encontrado." });
+      const i = d.inscricao || {};
+      if (!/^https:\/\//.test(i.endpoint || "") || !i.keys?.p256dh || !i.keys?.auth) return sai(res, 400, { erro: "Inscrição inválida." });
+      await db("push_inscricoes?on_conflict=endpoint", { method: "POST", prefer: "resolution=merge-duplicates,return=minimal", body: [{
+        endpoint: String(i.endpoint).slice(0, 1000), p256dh: limpa(i.keys.p256dh, 200), auth: limpa(i.keys.auth, 100), dono_tipo: tipo, dono_id: dono.id,
+      }] });
+      await avisar(tipo, dono.id, { title: "Avisos ligados", body: tipo === "empresa" ? "Você vai saber na hora quando chegar um currículo." : "Você vai saber na hora quando uma empresa responder.", url: tipo === "empresa" ? "/#area" : "/#candidaturas" });
+      return sai(res, 200, { ok: true });
     }
 
     return sai(res, 404, { erro: "Ação desconhecida." });

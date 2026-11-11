@@ -1,0 +1,16 @@
+{
+  "name": "Matchly — encontre seu trabalho ideal",
+  "short_name": "Matchly",
+  "description": "Vagas de diária e emprego fixo perto de você. Grátis para quem procura trabalho.",
+  "lang": "pt-BR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#7A1B2E",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -613,6 +613,7 @@ const ICON_PATHS = {
   user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4.5 20.5c1-3.6 4-5.5 7.5-5.5s6.5 1.9 7.5 5.5",
   more: "M5 12h.01 M12 12h.01 M19 12h.01",
   bell: "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z M10 20.5a2 2 0 0 0 4 0",
+  download: "M12 4v11 M7 10.5l5 5 5-5 M5 20h14",
   moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
   sun: "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M12 2.5v2 M12 19.5v2 M4.6 4.6 6 6 M18 18l1.4 1.4 M2.5 12h2 M19.5 12h2 M4.6 19.4 6 18 M18 6l1.4-1.4",
   chat: "M4 5h16v11H9l-5 4z",
@@ -759,7 +760,14 @@ const GUARDADO = (() => { try { return JSON.parse(localStorage.getItem("matchly:
 
 export default function App() {
   const [dark, setDark] = useState(!!GUARDADO?.dark);
-  const [view, setView] = useState(ACESSO_LINK ? "recruiter" : GUARDADO?.logged ? "dash" : "landing");
+  const [view, setView] = useState(() => {
+    if (ACESSO_LINK) return "recruiter";
+    const h = typeof window !== "undefined" ? window.location.hash : "";
+    if (h === "#area" || h === "#candidaturas") { try { window.history.replaceState(null, "", window.location.pathname); } catch (e) { /* segue */ } }
+    if (h === "#area") return "recruiter";
+    if (h === "#candidaturas" && GUARDADO?.logged) return "apps";
+    return GUARDADO?.logged ? "dash" : "landing";
+  });
   const [openJob, setOpenJob] = useState(null);
   const [logged, setLogged] = useState(!!GUARDADO?.logged);
   const [profile, setProfile] = useState(GUARDADO?.profile || DEFAULT_PROFILE);
@@ -811,7 +819,8 @@ export default function App() {
         const emp = new Map();
         rows.forEach((v) => { const e = v.empresas; if (e && !emp.has(e.id)) emp.set(e.id, {
           id: e.id, name: e.nome, sector: e.setor || (e.tipo === "pessoa" ? "Contratante particular" : "Empresa"), size: e.tamanho || "—", city: e.cidade || "—", verified: !!e.verificada,
-          culture: [], logo: e.logo_url || "", domain: e.dominio || "", site: e.site || "", descricao: e.descricao || "", beneficios: e.beneficios || [] }); });
+          culture: [], logo: e.logo_url || "", domain: e.dominio || "", site: e.site || "", descricao: e.descricao || "", beneficios: e.beneficios || [],
+          nota: out.avaliacoes?.[e.id] || null }); });
         const vagas = rows.map((v) => ({
           id: v.id, title: v.titulo, companyId: v.empresa_id, area: v.area || "Atendimento", city: v.cidade || "—", state: v.uf || "—",
           model: v.modelo || "Presencial", contract: v.contrato || "CLT", sMin: +v.salario_min || 0, sMax: +v.salario_max || +v.salario_min || 0,
@@ -825,7 +834,7 @@ export default function App() {
         COMPANIES.splice(0, COMPANIES.length, ...emp.values());
         JOBS.splice(0, JOBS.length, ...vagas);
         const existe = new Set(vagas.map((v) => v.id));
-        setApps((a) => a.filter((x) => existe.has(x.jobId)));
+        setApps((a) => a.filter((x) => x.remoteId || existe.has(x.jobId)));
         setSaved((sv) => Object.fromEntries(Object.entries(sv).filter(([k]) => existe.has(k))));
         setCompare([]); setNotifs((n) => n.filter((x) => !/^n\d$/.test(x.id)));
         if (tot) setRadarTotal(tot);
@@ -836,6 +845,19 @@ export default function App() {
       } finally { setCarregando(false); }
     })();
   }, [prefs.city, profile.city]);
+  // tocar num aviso com o app já aberto: /#area ou /#candidaturas
+  useEffect(() => {
+    const f = () => {
+      const h = window.location.hash;
+      if (h !== "#area" && h !== "#candidaturas") return;
+      try { window.history.replaceState(null, "", window.location.pathname); } catch (e) { /* segue */ }
+      setOpenJob(null); setCompanyOpen(null);
+      setView(h === "#area" ? "recruiter" : "apps"); setSinc((x) => x + 1);
+    };
+    window.addEventListener("hashchange", f);
+    return () => window.removeEventListener("hashchange", f);
+  }, []);
+  const [sinc, setSinc] = useState(0);
   useEffect(() => {
     if (!AO_VIVO) return;
     let vivo = true;
@@ -848,20 +870,26 @@ export default function App() {
         const porId = new Map(candidaturas.map((c) => [c.id, c]));
         setApps((lista) => {
           const avisos = [];
+          const conhecidas = new Set(lista.map((a) => a.remoteId).filter(Boolean));
           const nova = lista.map((a) => {
             const c = a.remoteId && porId.get(a.remoteId);
             if (!c) return a;
             const vista = c.vista && !a.vista;
             const mudou = c.etapa !== a.stage && c.etapa !== "Candidatura enviada";
-            if (!vista && !mudou) return a;
-            const j = JOBS.find((x) => x.id === a.jobId);
-            const nome = j ? companyOf(j.companyId)?.name || "A empresa" : "A empresa";
-            if (mudou) avisos.push(c.etapa === "Entrevista" ? [`${nome} quer conversar com você`, `Vaga: ${j?.title || ""}. Fique de olho no seu WhatsApp.`, "mic"]
-              : c.etapa === "Contratada" ? [`Você foi contratada(o) por ${nome}!`, `Vaga: ${j?.title || ""}.`, "star"]
-              : [`${nome} seguiu com outra pessoa`, `Vaga: ${j?.title || ""}. Continue se candidatando, outras vagas vão aparecer.`, "file"]);
-            else avisos.push([`${nome} viu seu currículo`, `Vaga: ${j?.title || ""}.`, "checkCircle"]);
-            return { ...a, stage: mudou ? c.etapa : a.stage, vista: c.vista };
+            const avaliou = c.minha_avaliacao || a.avaliou || null;
+            const nomes = { vagaNome: c.vaga || a.vagaNome, empresaNome: c.empresa || a.empresaNome };
+            if (!vista && !mudou) return avaliou !== a.avaliou || nomes.vagaNome !== a.vagaNome ? { ...a, avaliou, ...nomes } : a;
+            const nome = c.empresa || "A empresa";
+            if (mudou) avisos.push(c.etapa === "Entrevista" ? [`${nome} quer conversar com você`, `Vaga: ${c.vaga}. Fique de olho no seu WhatsApp.`, "mic"]
+              : c.etapa === "Contratada" ? [`Você foi contratado(a) por ${nome}!`, `Vaga: ${c.vaga}. Depois, conte como foi: avalie a empresa.`, "star"]
+              : [`${nome} seguiu com outra pessoa`, `Vaga: ${c.vaga}. Continue se candidatando, outras vagas vão aparecer.`, "file"]);
+            else avisos.push([`${nome} viu seu currículo`, `Vaga: ${c.vaga}.`, "checkCircle"]);
+            return { ...a, stage: mudou ? c.etapa : a.stage, vista: c.vista, avaliou, ...nomes };
           });
+          // aparelho novo: traz as candidaturas que só existem no servidor
+          candidaturas.filter((c) => !conhecidas.has(c.id)).forEach((c) => nova.push({
+            id: "r" + c.id, remoteId: c.id, jobId: c.vaga_id, stage: c.etapa, vista: c.vista, avaliou: c.minha_avaliacao || null,
+            date: new Date(c.criada_em).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }), notes: "", vagaNome: c.vaga, empresaNome: c.empresa }));
           if (avisos.length) {
             setNotifs((n) => [...avisos.map(([title, text, icon], i) => ({ id: "s" + Date.now() + i, icon, title, text, time: "agora", read: false })), ...n]);
             setToast(avisos[0][0]);
@@ -873,7 +901,14 @@ export default function App() {
     conferir();
     const t = setInterval(conferir, 30000);
     return () => { vivo = false; clearInterval(t); };
-  }, []);
+  }, [sinc]);
+
+  // perfil guardado também no servidor: assim a pessoa entra de outro celular e encontra tudo
+  useEffect(() => {
+    if (!AO_VIVO || !logged || !CHAVES.get("candidato")) return;
+    const t = setTimeout(() => { api("salvar_perfil", { token: CHAVES.get("candidato"), perfil: { profile, prefs } }).catch(() => {}); }, 3000);
+    return () => clearTimeout(t);
+  }, [profile, prefs, logged]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2600); return () => clearTimeout(t); }, [toast]);
   const say = (m) => setToast(m);
 
@@ -892,8 +927,9 @@ export default function App() {
   const requireLogin = (v) => (logged ? go(v) : go("signup"));
   // Entrar: em modo ao vivo só entra quem já se cadastrou neste aparelho
   const entrar = () => {
-    if (AO_VIVO && !GUARDADO?.profile?.name && CHAVES.get("empresa")) { go("recruiter"); return; }
-    if (AO_VIVO && !GUARDADO?.profile?.name) { setToast("Você ainda não tem cadastro neste aparelho. Leva menos de um minuto."); go("signup"); return; }
+    const temCadastro = !!(GUARDADO?.profile?.name || CHAVES.get("candidato"));
+    if (AO_VIVO && !temCadastro && CHAVES.get("empresa")) { go("recruiter"); return; }
+    if (AO_VIVO && !temCadastro) { go("entrar"); return; }
     setLogged(true); go("dash");
   };
   const comecar = (tipos = []) => { setPreTipo(tipos); go("signup"); };
@@ -913,7 +949,7 @@ export default function App() {
   const setFolder = (id, f) => setSaved((s) => ({ ...s, [id]: f }));
 
   const ctx = { profile, setProfile, prefs, setPrefs, matches, saved, toggleSave, setFolder, apply, apps, setApps, go, say, setOpenJob, hidden, setHidden, feed, logged, autopilot, setAutopilot,
-    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs };
+    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1) };
 
   const navItems = [["dash", "Início"], ["feed", "Vagas"], ["search", "Buscar"], ["apps", "Candidaturas"], ["profile", "Meu perfil"], ["hub", "Mais"]];
   const unread = notifs.filter((n) => !n.read).length;
@@ -982,6 +1018,7 @@ export default function App() {
           view === "companyRegister" ? <CompanyRegister ctx={ctx} /> :
           view.startsWith("err") ? <ErrorPage kind={view} ctx={ctx} /> :
           view === "landing" ? <Landing go={go} comecar={comecar} matches={matches} /> :
+          view === "entrar" ? <Entrar ctx={ctx} /> :
           view === "signup" ? <QuickSignup key={preTipo.join(",")} ctx={ctx} inicial={preTipo} /> :
           view === "cvedit" ? <Signup ctx={ctx} onDone={() => {
             setLogged(true); setToast("Currículo atualizado");
@@ -1041,6 +1078,7 @@ function Landing({ comecar, go, matches }) {
               <span><Ic n="checkCircle" />Cadastro em 1 minuto</span>
               <span><Ic n="checkCircle" />Nenhuma vaga pode cobrar de você</span>
             </div>
+            <div style={{ marginTop: 18 }}><BotaoInstalar compacto /></div>
           </div>
 
           {demo.length === 0 ? (
@@ -1327,6 +1365,9 @@ function QuickSignup({ ctx, inicial = [] }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const setT = (i, k, v) => setF((x) => { const t = [...x.trabalhos]; t[i] = { ...t[i], [k]: v }; return { ...x, trabalhos: t }; });
   const [erro, setErro] = useState("");
+  const [senha, setSenha] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [jaTem, setJaTem] = useState(false);
   const telOk = f.tel.replace(/\D/g, "").length >= 10;
   const TOTAL = 4;
 
@@ -1335,6 +1376,7 @@ function QuickSignup({ ctx, inicial = [] }) {
       if (!f.nome.trim()) return setErro("Escreva o seu nome.");
       if (!telOk) return setErro("Coloque o seu WhatsApp com DDD. É por ele que quem contrata fala com você.");
       if (!f.cidade.trim()) return setErro("Diga a sua cidade, para mostrarmos vagas perto de você.");
+      if (AO_VIVO && !/^\d{6}$/.test(senha)) return setErro("Crie uma senha de 6 números. Com ela você entra de outro celular.");
     }
     if (passo === 1 && !f.tipos.length) return setErro("Escolha pelo menos um tipo de trabalho.");
     if (passo === 2 && !f.semExperiencia) {
@@ -1346,7 +1388,7 @@ function QuickSignup({ ctx, inicial = [] }) {
     concluir();
   };
 
-  const concluir = () => {
+  const concluir = async () => {
     const escolhidos = TIPOS.filter((t) => f.tipos.includes(t.id));
     const trabalhos = f.semExperiencia ? [] : f.trabalhos.filter((t) => t.title.trim());
     const experiences = trabalhos.map((t) => ({
@@ -1358,16 +1400,30 @@ function QuickSignup({ ctx, inicial = [] }) {
     const contratos = f.formato === "Diária ou por hora" ? CONTRATOS_BICO : f.formato === "Emprego fixo" ? ["CLT", "Aprendiz", "Estágio"] : [...CONTRATOS_BICO, "CLT", "Aprendiz", "Estágio"];
     const CNH = { "A (moto)": ["A", ["CNH A"]], "B (carro)": ["B", ["CNH B"]], "AB": ["AB", ["CNH A", "CNH B"]], "C, D ou E": ["C, D ou E", ["CNH B"]] };
     const [cnhCat, cnhSkills] = CNH[f.cnh] || ["Não tenho", []];
-    ctx.setProfile({
+    const novoPerfil = {
       ...EMPTY_PROFILE, name: f.nome.trim(), phone: f.tel, city: f.cidade.trim(), bairro: f.bairro.trim(), years: anos,
       experiences, sobre: f.sobre.trim(), cnh: cnhCat, documentos: f.documentos,
       skills: [...new Set([...escolhidos.flatMap((t) => t.skills), ...experiences.flatMap((e) => e.skills), ...cnhSkills])],
       horarios: f.horarios, inicio: f.inicio,
       education: f.estudo ? [{ level: f.estudo, course: "", school: "", status: "Concluído", end: "" }] : [],
       role: escolhidos[0]?.role || experiences[0]?.title || "", cadastroRapido: true,
-    });
-    ctx.setPrefs({ ...EMPTY_PREFS, mainRole: escolhidos[0]?.role || "", altRoles: escolhidos.slice(1).map((t) => t.role),
-      city: f.cidade.trim(), areas: escolhidos.map((t) => t.area), models: ["Presencial", "Híbrido"], contracts: contratos });
+    };
+    const novasPrefs = { ...EMPTY_PREFS, mainRole: escolhidos[0]?.role || "", altRoles: escolhidos.slice(1).map((t) => t.role),
+      city: f.cidade.trim(), areas: escolhidos.map((t) => t.area), models: ["Presencial", "Híbrido"], contracts: contratos };
+    if (AO_VIVO) {
+      setEnviando(true);
+      try {
+        const r = await api("cadastro", { perfil: { profile: novoPerfil, prefs: novasPrefs }, login: f.tel, senha });
+        CHAVES.set("candidato", r.token);
+      } catch (e) {
+        setEnviando(false);
+        if (e.status === 409) { setJaTem(true); setPasso(0); window.scrollTo({ top: 0 }); return setErro(e.message); }
+        // sem internet ou servidor fora: o cadastro fica neste aparelho e sobe depois
+      }
+      setEnviando(false);
+    }
+    ctx.setProfile(novoPerfil);
+    ctx.setPrefs(novasPrefs);
     ctx.setApps([]); ctx.setSaved({}); ctx.setHidden([]);
     ctx.setNotifs([{ id: "boasvindas", icon: "checkCircle", title: "Cadastro feito", text: "Avisamos aqui quando aparecer vaga nova que combine com você.", time: "agora", read: false }]);
     ctx.setLogged(true);
@@ -1405,6 +1461,7 @@ function QuickSignup({ ctx, inicial = [] }) {
           <Field label="WhatsApp" hint="Só aparece para quem você autorizar.">
             <input id="q-tel" className="input" inputMode="tel" autoComplete="tel" value={f.tel} onChange={(e) => set("tel", mascaraTel(e.target.value))} placeholder="(11) 90000-0000" />
           </Field>
+          {AO_VIVO && <CampoSenha id="q-senha" valor={senha} onChange={setSenha} rotulo="Crie uma senha de 6 números" dica="Com o seu WhatsApp e esta senha, você entra de qualquer celular." />}
           <div className="grid2">
             <Field label="Cidade"><input id="q-cidade" className="input" autoComplete="address-level2" value={f.cidade} onChange={(e) => set("cidade", e.target.value)} placeholder="Ex.: São Paulo" /></Field>
             <Field label="Bairro (opcional)"><input id="q-bairro" className="input" value={f.bairro} onChange={(e) => set("bairro", e.target.value)} placeholder="Ex.: Itaquera" /></Field>
@@ -1462,8 +1519,9 @@ function QuickSignup({ ctx, inicial = [] }) {
                 <input id={`q-atual-${i}`} type="checkbox" checked={t.atual} onChange={(e) => setT(i, "atual", e.target.checked)} style={{ accentColor: "var(--wine)", width: 17, height: 17 }} />
                 Ainda trabalho lá
               </label>
-              <Field label="Conte o que você fazia no dia a dia (opcional)" hint="Escreva do seu jeito. Depois, se quiser, a gente arruma o texto para o currículo, sem inventar nada.">
+              <Field label="Conte o que você fazia no dia a dia (opcional)" hint={Reconhecedor ? "Escreva ou fale do seu jeito. Depois, se quiser, a gente arruma o texto para o currículo, sem inventar nada." : "Escreva do seu jeito. Depois, se quiser, a gente arruma o texto para o currículo, sem inventar nada."}>
                 <textarea id={`q-raw-${i}`} className="ta" value={t.raw} onChange={(e) => setT(i, "raw", e.target.value)} placeholder="Ex.: limpava a casa toda, passava roupa e cuidava das plantas" />
+                <div style={{ marginTop: 8 }}><BotaoFalar rotulo="Contar falando" onTexto={(txt) => setF((x) => { const tt = [...x.trabalhos]; tt[i] = { ...tt[i], raw: `${tt[i].raw} ${txt}`.trim() }; return { ...x, trabalhos: tt }; })} /></div>
               </Field>
               {t.raw.trim().length > 3 && (
                 <button className="btn btn-s btn-sm" onClick={() => melhorar(i)}><Ic n="sparkle" s={15} /> {t.results ? "Refazer texto" : "Arrumar texto para o currículo"}</button>
@@ -1521,17 +1579,20 @@ function QuickSignup({ ctx, inicial = [] }) {
             <h3 style={{ marginBottom: 6, fontSize: 16 }}>Quer contar algo sobre você?</h3>
             <p className="muted" style={{ marginBottom: 12 }}>Aparece no topo do seu currículo. Duas ou três frases bastam.</p>
             <textarea id="q-sobre" className="ta" value={f.sobre} onChange={(e) => set("sobre", e.target.value)} placeholder="Ex.: Sou pontual, gosto de trabalhar com público e aprendo rápido." />
+            <div style={{ marginTop: 8 }}><BotaoFalar rotulo="Contar falando" onTexto={(txt) => setF((x) => ({ ...x, sobre: `${x.sobre} ${txt}`.trim() }))} /></div>
           </div>
         </div>
       )}
 
-      {erro && <div className="note" role="alert" style={{ marginTop: 18, borderColor: "var(--bad)", color: "var(--bad)" }}>{erro}</div>}
+      {erro && <div className="note" role="alert" style={{ marginTop: 18, borderColor: "var(--bad)", color: "var(--bad)" }}>{erro}
+        {jaTem && <div style={{ marginTop: 10 }}><button className="btn btn-p btn-sm" onClick={() => { ctx.setRole("Candidato"); ctx.go("entrar"); }}>Entrar com a minha senha</button></div>}</div>}
+      {AO_VIVO && passo === 0 && !erro && <p className="small" style={{ marginTop: 14 }}>Já tem cadastro? <a href="#" onClick={(e) => { e.preventDefault(); ctx.setRole("Candidato"); ctx.go("entrar"); }}>Entrar</a></p>}
       <div className="between" style={{ marginTop: 26, flexWrap: "wrap", gap: 10 }}>
         <button className="btn btn-g" onClick={() => (passo ? setPasso(passo - 1) : ctx.go("landing"))}><Ic n="back" s={16} /> Voltar</button>
         <div className="row" style={{ gap: 8 }}>
           {passo >= 2 && passo < TOTAL - 1 && <button className="btn btn-g" onClick={() => { setErro(""); setPasso(passo + 1); window.scrollTo({ top: 0 }); }}>Pular</button>}
-          <button className="btn btn-p" style={{ padding: "13px 26px", fontSize: 15 }} onClick={avancar}>
-            {passo < TOTAL - 1 ? "Continuar" : "Ver vagas para mim"} <Ic n="arrow" s={16} />
+          <button className="btn btn-p" style={{ padding: "13px 26px", fontSize: 15 }} onClick={avancar} disabled={enviando}>
+            {enviando ? "Salvando…" : passo < TOTAL - 1 ? "Continuar" : "Ver vagas para mim"} <Ic n="arrow" s={16} />
           </button>
         </div>
       </div>
@@ -1866,6 +1927,7 @@ function Dashboard({ ctx }) {
       <h2>{greet}{profile.name.trim() ? `, ${profile.name.trim().split(" ")[0]}` : ""}</h2>
       <p style={{ marginTop: 6 }}>Seu perfil está {st}% completo.</p>
       <div className="bar" style={{ maxWidth: 320, marginTop: 10 }}><i style={{ width: st + "%" }} /></div>
+      <div className="row" style={{ marginTop: 16, gap: 8, flexWrap: "wrap" }}><BotaoInstalar compacto /></div>
 
       <div className="grid-cards" style={{ marginTop: 28, gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))" }}>
         {[["briefcase", feed.filter((j) => matches[j.id].score >= 70).length, "vagas que combinam", "feed"],
@@ -1932,7 +1994,7 @@ function JobCard({ job, ctx }) {
           <div className="between" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 6 }}>
             <div style={{ minWidth: 0 }}>
               <h3 style={{ fontSize: 16, cursor: "pointer" }} onClick={() => ctx.setOpenJob(job.id)}>{job.title}</h3>
-              <div className="small row" style={{ marginTop: 2, gap: 6 }}>{c.name}{c.verified && <span title="Empresa verificada" style={{ color: "var(--ok)", display: "inline-flex" }}><Ic n="checkCircle" s={14} /></span>}</div>
+              <div className="small row" style={{ marginTop: 2, gap: 6 }}>{c.name}{c.verified && <span title="Empresa verificada" style={{ color: "var(--ok)", display: "inline-flex" }}><Ic n="checkCircle" s={14} /></span>}{c.nota && <Estrelas r={c.nota} pequeno />}</div>
             </div>
             <div className="score">Combina {m.score}%</div>
           </div>
@@ -2316,6 +2378,7 @@ function RevisarCandidatura({ job, c, m, ctx, enviada, fechar }) {
                   </div>
                   <textarea id="rev-msg" className="ta" value={msg} onChange={(e) => setMsg(e.target.value)} maxLength={600}
                     placeholder={`Ex.: Olá! Tenho interesse na vaga e posso começar ${p.inicio === "Imediatamente" ? "agora" : "em breve"}.`} />
+                  <div style={{ marginTop: 8 }}><BotaoFalar rotulo="Falar a mensagem" onTexto={(t) => setMsg((x) => `${x} ${t}`.trim().slice(0, 600))} /></div>
                 </div>
               )}
             </>
@@ -2407,6 +2470,7 @@ function Applications({ ctx }) {
   const { apps, setApps } = ctx;
   const [over, setOver] = useState(null);
   const [vendo, setVendo] = useState(null);
+  const [avaliando, setAvaliando] = useState(null);
   const drag = useRef(null);
   const move = (id, dir) => setApps(apps.map((a) => {
     if (a.id !== id) return a;
@@ -2421,6 +2485,7 @@ function Applications({ ctx }) {
         <p className="muted" style={{ marginTop: 4 }}>Arraste os cards entre etapas — ou use as setas no celular.</p></div>
         <span className="badge b-wine">{apps.length} em andamento</span></div>
 
+      <div style={{ marginTop: 16 }}><BotaoAvisos papel="candidato" ctx={ctx} texto="Receba um aviso no celular quando a empresa responder." /></div>
       <div className="kanban" style={{ marginTop: 22 }}>
         {STAGES.map((s) => (
           <div key={s} className="kcol" data-over={over === s ? "1" : "0"}
@@ -2429,19 +2494,22 @@ function Applications({ ctx }) {
               <span style={{ fontSize: 13, fontWeight: 600 }}>{s}</span>
               <span className="muted">{apps.filter((a) => a.stage === s).length}</span>
             </div>
-            {apps.filter((a) => a.stage === s && JOBS.some((x) => x.id === a.jobId)).map((a) => {
+            {apps.filter((a) => a.stage === s && (a.vagaNome || JOBS.some((x) => x.id === a.jobId))).map((a) => {
               const j = JOBS.find((x) => x.id === a.jobId);
               return (
                 <div key={a.id} className="kcard" draggable onDragStart={() => (drag.current = a.id)}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{j.title}</div>
-                  <div className="muted" style={{ marginTop: 2 }}>{companyOf(j.companyId).name}</div>
-                  <div className="muted" style={{ marginTop: 6 }}>{payLabel(j)} · desde {a.date}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{j ? j.title : a.vagaNome}</div>
+                  <div className="muted" style={{ marginTop: 2 }}>{j ? companyOf(j.companyId)?.name : a.empresaNome}</div>
+                  <div className="muted" style={{ marginTop: 6 }}>{j ? `${payLabel(j)} · ` : "Vaga encerrada · "}desde {a.date}</div>
+                  {a.remoteId && a.stage === "Contratada" && (a.avaliou
+                    ? <div className="small" style={{ marginTop: 6 }}>Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(a.avaliou)}</span></div>
+                    : <button className="btn btn-s btn-sm" style={{ marginTop: 8 }} onClick={() => setAvaliando(a)}><span style={{ color: "#C98A00" }}>★</span> Avaliar a empresa</button>)}
                   {a.notes && <div className="small" style={{ marginTop: 8 }}>{a.notes}</div>}
                   {a.cv && <button className="btn btn-g btn-sm" style={{ marginTop: 6, paddingLeft: 0, color: "var(--wine)" }} onClick={() => setVendo(a)}><Ic n="file" s={14} /> Ver currículo enviado</button>}
                   <div className="row" style={{ marginTop: 8 }}>
                     <button className="btn btn-g btn-sm" onClick={() => move(a.id, -1)} aria-label="Etapa anterior">←</button>
                     <button className="btn btn-g btn-sm" onClick={() => move(a.id, 1)} aria-label="Próxima etapa">→</button>
-                    <button className="btn btn-g btn-sm grow" onClick={() => ctx.setOpenJob(j.id)}>Abrir</button>
+                    {j && <button className="btn btn-g btn-sm grow" onClick={() => ctx.setOpenJob(j.id)}>Abrir</button>}
                   </div>
                 </div>
               );
@@ -2450,6 +2518,17 @@ function Applications({ ctx }) {
           </div>
         ))}
       </div>
+      {avaliando && (
+        <JanelaAvaliar titulo={`Como foi trabalhar ${avaliando.empresaNome ? `com ${avaliando.empresaNome}` : "nessa vaga"}?`}
+          sub="Sua nota aparece na página da empresa e ajuda outras pessoas. Seu nome não aparece."
+          dica="Conte como foi: pagaram certo e no dia? O lugar era seguro? Trataram você com respeito?"
+          fechar={() => setAvaliando(null)}
+          onEnviar={async (nota, comentario) => {
+            await api("avaliar", { token: CHAVES.get("candidato"), papel: "candidato", candidaturaId: avaliando.remoteId, nota, comentario });
+            setApps(apps.map((x) => (x.id === avaliando.id ? { ...x, avaliou: nota } : x)));
+            ctx.say("Obrigado! Sua avaliação ajuda outras pessoas.");
+          }} />
+      )}
       {vendo && JOBS.some((x) => x.id === vendo.jobId) && (() => {
         const j = JOBS.find((x) => x.id === vendo.jobId);
         return <RevisarCandidatura job={j} c={companyOf(j.companyId)} m={ctx.matches[j.id]} ctx={ctx} enviada={vendo} fechar={() => setVendo(null)} />;
@@ -2529,7 +2608,26 @@ function Profile({ ctx }) {
           {p.portfolio.map((c) => <Tag key={c} i="folder">{c}</Tag>)}
         </div>
       </Section>
+      <ContaCandidato ctx={ctx} />
     </div>
+  );
+}
+/* Entrar de outro celular: WhatsApp + senha de 6 números */
+function ContaCandidato({ ctx }) {
+  const [conta, setConta] = useState(undefined);
+  const token = CHAVES.get("candidato");
+  useEffect(() => {
+    if (!AO_VIVO || !token) return;
+    api("minhas", { token }).then((r) => setConta(r.conta)).catch(() => setConta(null));
+  }, [token]);
+  if (!AO_VIVO || !token || conta === undefined) return null;
+  return (
+    <Section title="Entrar de outro celular">
+      <div style={{ paddingTop: 14 }}>
+        <BotaoAvisos papel="candidato" ctx={ctx} texto="Receba um aviso no celular quando uma empresa responder." />
+        <DefinirSenha papel="candidato" ctx={ctx} jaTem={conta?.login} loginInicial={conta?.login ? mascaraTel(conta.login) : ctx.profile.phone || ""} />
+      </div>
+    </Section>
   );
 }
 const Section = ({ title, children }) => (
@@ -2679,6 +2777,7 @@ const Hub = ({ go, role, setRole }) => {
     <div className="wrap" style={{ padding: "32px 24px 60px" }}>
       <h2>Tudo o que o Matchly faz</h2>
       <p style={{ marginTop: 6 }}>Cada área conversa com as outras: o perfil alimenta o currículo, o currículo alimenta a candidatura.</p>
+      <div style={{ marginTop: 14 }}><BotaoInstalar compacto /></div>
       <div className="grid-cards" style={{ marginTop: 24 }}>
         {items.map(([v, i, t, d]) => (
           <button key={v} className="card card-h" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => go(v)}>
@@ -3348,7 +3447,7 @@ function CompanyPage({ id, ctx }) {
         <div className="row" style={{ flexWrap: "wrap" }}>
           <CompanyLogo c={c} size={76} radius={14} />
           <div className="grow">
-            <h2>{c.name}</h2>
+            <h2 className="row" style={{ gap: 12, flexWrap: "wrap" }}>{c.name} <Estrelas r={c.nota} /></h2>
             <p style={{ marginTop: 4 }}>{[c.sector, c.city !== "—" && c.city, c.size && c.size !== "—" && `${c.size} funcionários`].filter(Boolean).join(" · ")}</p>
             <div className="chips" style={{ marginTop: 8 }}>
               {c.verified ? <span className="badge b-green">Empresa verificada</span> : c.pending ? <span className="badge b-yellow">Verificação pendente</span> : <span className="badge b-yellow">Não verificada</span>}
@@ -3358,11 +3457,16 @@ function CompanyPage({ id, ctx }) {
           <button className="btn btn-s btn-sm" onClick={() => ctx.setFollowing(ctx.following.includes(c.id) ? ctx.following.filter((x) => x !== c.id) : [...ctx.following, c.id])}>
             {ctx.following.includes(c.id) ? "Seguindo" : "Seguir empresa"}</button>
         </div>
-        <p style={{ marginTop: 16 }}>{c.descricao || `${c.sector ? `Empresa do ramo de ${String(c.sector).toLowerCase()}. ` : ""}As vagas abaixo são atualizadas automaticamente a partir da página oficial da empresa.`}</p>
+        <p style={{ marginTop: 16 }}>{c.descricao || (c.sector === "Contratante particular"
+          ? "Pessoa que contrata pelo Matchly. As vagas abaixo foram publicadas aqui mesmo, e o currículo vai direto para ela."
+          : c.site || c.domain
+            ? `${c.sector ? `Empresa do ramo de ${String(c.sector).toLowerCase()}. ` : ""}As vagas abaixo são atualizadas automaticamente a partir da página oficial da empresa.`
+            : `${c.sector && c.sector !== "Empresa" ? `Empresa do ramo de ${String(c.sector).toLowerCase()}. ` : ""}As vagas abaixo foram publicadas direto no Matchly.`)}</p>
         <div className="chips" style={{ marginTop: 14 }}>{c.culture.map((x) => <span key={x} className="tag">{x}</span>)}</div>
         {benefits.length > 0 && <><h3 style={{ marginTop: 20, fontSize: 15 }}>Benefícios</h3>
         <div className="chips" style={{ marginTop: 10 }}>{benefits.map((b) => <span key={b} className="tag">{b}</span>)}</div></>}
       </div>
+      <AvaliacoesDaEmpresa id={c.id} />
       <h3 style={{ margin: "24px 0 14px" }}>Vagas abertas ({jobs.length})</h3>
       {jobs.length === 0 && <div className="empty"><h3>Nenhuma vaga aberta agora</h3><p style={{ marginTop: 8 }}>Siga a empresa e avisamos quando abrir algo.</p></div>}
       <div className="col" style={{ gap: 14 }}>{jobs.map((j) => <JobCard key={j.id} job={j} ctx={ctx} />)}</div>
@@ -3720,19 +3824,21 @@ function HirePost({ ctx }) {
 
   const temAcesso = AO_VIVO && !!CHAVES.get("empresa");
   const [enviando, setEnviando] = useState(false);
+  const [senha, setSenha] = useState("");
   const publicar = async () => {
     if ((!temAcesso && (!f.nome.trim() || !f.contato.trim())) || !f.titulo.trim()) {
       setErro("Preencha seu nome, o que você precisa e um contato.");
       return;
     }
     if (+f.sMax < +f.sMin) { setErro("O valor máximo não pode ser menor que o mínimo."); return; }
+    if (AO_VIVO && !temAcesso && !/^\d{6}$/.test(senha)) { setErro("Crie uma senha de 6 números. Você vai usar para entrar de outro aparelho."); return; }
     const area = detectAreas(`${f.titulo} ${f.desc}`)[0] || (tipo === "Pessoa" ? "Serviços" : "Atendimento");
     const habilidades = f.skills.length ? f.skills : [...new Set([...detectSkills(`${f.titulo} ${f.desc}`), "Responsabilidade"])];
     if (AO_VIVO) {
       setErro(""); setEnviando(true);
       try {
         const out = await api("publicar", {
-          token: CHAVES.get("empresa") || undefined,
+          token: CHAVES.get("empresa") || undefined, senha: temAcesso ? undefined : senha,
           contratante: { tipo, nome: f.nome, setor: f.setor, contato: f.contato, cidade: f.cidade },
           vaga: { titulo: f.titulo, descricao: (f.desc.trim() || `Preciso de ${f.titulo.toLowerCase()} em ${f.cidade}.`) + (tipo === "Pessoa" ? ` Frequência: ${f.freq.toLowerCase()}.` : ""),
             cidade: f.cidade, modelo: f.model, contrato: f.contract, salario_min: +f.sMin || null, salario_max: +f.sMax || null, unidade: f.unit,
@@ -3799,6 +3905,8 @@ function HirePost({ ctx }) {
         <Field label="Seu telefone com WhatsApp ou e-mail" hint={AO_VIVO ? "Não aparece na vaga. Os candidatos enviam o currículo pelo site e você vê tudo na sua área." : "Telefone com WhatsApp ou e-mail."}>
           <input className="input" value={f.contato} onChange={(e) => set("contato", e.target.value)} placeholder="(11) 90000-0000" />
         </Field>
+        {AO_VIVO && <CampoSenha id="h-senha" valor={senha} onChange={setSenha} rotulo="Crie uma senha de 6 números" dica="Com o seu contato e esta senha, você entra na sua área de qualquer celular ou computador." />}
+        {AO_VIVO && <p className="small" style={{ marginTop: -4 }}>Já publicou antes? <a href="#" onClick={(e) => { e.preventDefault(); ctx.setRole("Contratante"); ctx.go("entrar"); }}>Entre na sua conta</a>.</p>}
       </div>
       )}
 
@@ -3971,6 +4079,285 @@ function scoreCandidate(cand, job) {
   return Math.max(15, Math.min(98, Math.round(tipo * 42 + hab * 28 + local * 18 + exp * 12)));
 }
 
+/* ===================== CONTA, AVALIAÇÕES, AVISOS, ÁUDIO, INSTALAR ===================== */
+
+/* ---- estrelas ---- */
+const fmtNota = (n) => String(n).replace(".", ",");
+const Estrelas = ({ r, pequeno }) => r && r.total ? (
+  <span className="row" style={{ gap: 4, fontSize: pequeno ? 12.5 : 13.5, color: "var(--ink-2)", whiteSpace: "nowrap" }} title={`${fmtNota(r.media)} de 5, ${r.total} avaliação(ões)`}>
+    <span style={{ color: "#C98A00", fontSize: pequeno ? 13 : 15 }}>★</span><b style={{ color: "var(--ink)" }}>{fmtNota(r.media)}</b><span className="muted">({r.total})</span>
+  </span>
+) : null;
+function EscolherNota({ valor, onChange }) {
+  const nomes = ["", "Muito ruim", "Ruim", "Regular", "Bom", "Ótimo"];
+  return (
+    <div>
+      <div className="row" style={{ gap: 6 }} role="radiogroup" aria-label="Nota">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button key={n} type="button" role="radio" aria-checked={valor === n} aria-label={`${n} estrela${n > 1 ? "s" : ""}`} onClick={() => onChange(n)}
+            style={{ fontSize: 34, lineHeight: 1, background: "none", border: 0, cursor: "pointer", padding: 2, color: n <= valor ? "#C98A00" : "var(--line)" }}>★</button>
+        ))}
+      </div>
+      <div className="small" style={{ marginTop: 4, minHeight: 18 }}>{nomes[valor] || "Toque nas estrelas"}</div>
+    </div>
+  );
+}
+function JanelaAvaliar({ titulo, sub, dica, onEnviar, fechar }) {
+  const [nota, setNota] = useState(0);
+  const [texto, setTexto] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+  const enviar = async () => {
+    if (!nota) return setErro("Escolha de 1 a 5 estrelas.");
+    setEnviando(true); setErro("");
+    try { await onEnviar(nota, texto.trim()); fechar(); } catch (e) { setErro(e.message); setEnviando(false); }
+  };
+  return (
+    <div className="sheet" onClick={fechar} style={{ alignItems: "center" }}>
+      <div className="card" style={{ maxWidth: 480, width: "100%" }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={titulo}>
+        <h3>{titulo}</h3>
+        {sub && <p className="small" style={{ marginTop: 6 }}>{sub}</p>}
+        <div style={{ margin: "16px 0" }}><EscolherNota valor={nota} onChange={setNota} /></div>
+        <textarea className="ta" maxLength={400} value={texto} onChange={(e) => setTexto(e.target.value)} placeholder={dica} style={{ minHeight: 90 }} />
+        <div style={{ marginTop: 8 }}><BotaoFalar onTexto={(t) => setTexto((x) => (x + " " + t).trim().slice(0, 400))} rotulo="Falar o comentário" /></div>
+        {erro && <div className="small" style={{ color: "var(--bad)", marginTop: 10 }}>{erro}</div>}
+        <div className="row" style={{ marginTop: 16, justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn btn-g" onClick={fechar}>Agora não</button>
+          <button className="btn btn-p" disabled={enviando} onClick={enviar}>{enviando ? "Enviando…" : "Enviar avaliação"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function AvaliacoesDaEmpresa({ id }) {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    if (!AO_VIVO || !/^[0-9a-f-]{36}$/i.test(id)) return;
+    let vivo = true;
+    api(`avaliacoes&empresa=${id}`).then((x) => vivo && setD(x)).catch(() => vivo && setD({ resumo: null, itens: [] }));
+    return () => { vivo = false; };
+  }, [id]);
+  if (!AO_VIVO) return null;
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="between" style={{ flexWrap: "wrap", gap: 8 }}>
+        <h3 style={{ fontSize: 16 }}>Avaliações de quem trabalhou aqui</h3>
+        {d?.resumo && <Estrelas r={d.resumo} />}
+      </div>
+      <p className="muted" style={{ marginTop: 4 }}>Só quem foi contratado pelo Matchly pode avaliar. Assim as notas são de verdade.</p>
+      {!d ? <div className="skel" style={{ height: 60, marginTop: 12 }} /> : d.itens.length === 0 ? (
+        <p className="small" style={{ marginTop: 12 }}>Ainda não há avaliações. Elas aparecem aqui depois das primeiras contratações.</p>
+      ) : (
+        <div className="col divide" style={{ marginTop: 10 }}>
+          {d.itens.map((a, i) => (
+            <div key={i} style={{ padding: "12px 0" }}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <span style={{ color: "#C98A00", letterSpacing: 1 }}>{"★".repeat(a.nota)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - a.nota)}</span></span>
+                <span className="muted">{a.vaga ? `Trabalhou como ${a.vaga.toLowerCase()} · ` : ""}{quandoFoi(a.criada_em)}</span>
+              </div>
+              {a.comentario && <p className="small" style={{ marginTop: 6, color: "var(--ink)" }}>{a.comentario}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- falar em vez de escrever (reconhecimento de voz do próprio navegador, grátis) ---- */
+const Reconhecedor = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+function BotaoFalar({ onTexto, rotulo = "Falar em vez de escrever" }) {
+  const [ouvindo, setOuvindo] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const rec = useRef(null);
+  useEffect(() => () => { try { rec.current?.stop(); } catch (e) { /* já parou */ } }, []);
+  if (!Reconhecedor) return null;
+  const iniciar = () => {
+    try {
+      const r = new Reconhecedor();
+      r.lang = "pt-BR"; r.continuous = true; r.interimResults = false;
+      r.onresult = (e) => { let t = ""; for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript; if (t.trim()) onTexto(t.trim()); };
+      r.onerror = (e) => { setOuvindo(false); setAviso(e.error === "not-allowed" ? "Libere o microfone para o Matchly nas configurações do navegador." : e.error === "no-speech" ? "Não ouvi nada. Tente de novo, perto do celular." : ""); };
+      r.onend = () => setOuvindo(false);
+      rec.current = r; r.start(); setOuvindo(true); setAviso("");
+    } catch (e) { setAviso("Não deu para usar o microfone aqui."); }
+  };
+  const parar = () => { try { rec.current?.stop(); } catch (e) { /* já parou */ } setOuvindo(false); };
+  return (
+    <span className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      <button type="button" className={"btn btn-sm " + (ouvindo ? "btn-p" : "btn-s")} onClick={ouvindo ? parar : iniciar} aria-pressed={ouvindo}>
+        <Ic n="mic" s={15} /> {ouvindo ? "Gravando… toque para parar" : rotulo}
+      </button>
+      {ouvindo && <span className="small muted">Fale com calma. O texto aparece aqui.</span>}
+      {aviso && <span className="small" style={{ color: "var(--bad)" }}>{aviso}</span>}
+    </span>
+  );
+}
+
+/* ---- instalar no celular e avisos (Web Push) ---- */
+let PEDIDO_INSTALAR = null;
+const ouvintesInstalar = new Set();
+const NO_APP = typeof window !== "undefined" && (window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true);
+const EH_IPHONE = typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent);
+const PODE_SW = typeof window !== "undefined" && ENV.PROD && "serviceWorker" in navigator && window.location.protocol === "https:";
+if (PODE_SW) {
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); PEDIDO_INSTALAR = e; ouvintesInstalar.forEach((f) => f()); });
+  window.addEventListener("load", () => { navigator.serviceWorker.register("/sw.js").catch(() => {}); });
+}
+function BotaoInstalar({ compacto }) {
+  const [, atualizar] = useState(0);
+  const [ajuda, setAjuda] = useState(false);
+  const [feito, setFeito] = useState(false);
+  useEffect(() => { const f = () => atualizar((x) => x + 1); ouvintesInstalar.add(f); return () => ouvintesInstalar.delete(f); }, []);
+  if (!PODE_SW || NO_APP || feito || (!PEDIDO_INSTALAR && !EH_IPHONE)) return null;
+  const instalar = async () => {
+    if (PEDIDO_INSTALAR) { PEDIDO_INSTALAR.prompt(); const r = await PEDIDO_INSTALAR.userChoice.catch(() => ({})); if (r.outcome === "accepted") setFeito(true); PEDIDO_INSTALAR = null; return; }
+    setAjuda(true);
+  };
+  return (
+    <>
+      <button className={"btn btn-s" + (compacto ? " btn-sm" : "")} onClick={instalar}><Ic n="download" s={16} /> Instalar o Matchly no celular</button>
+      {ajuda && (
+        <div className="sheet" onClick={() => setAjuda(false)} style={{ alignItems: "center" }}>
+          <div className="card" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3>Colocar o Matchly na tela do iPhone</h3>
+            <ol className="small" style={{ margin: "14px 0 0", paddingLeft: 20, lineHeight: 1.9 }}>
+              <li>Abra o site no <b>Safari</b>.</li>
+              <li>Toque no botão <b>Compartilhar</b> (o quadrado com a seta para cima).</li>
+              <li>Escolha <b>Adicionar à Tela de Início</b> e toque em <b>Adicionar</b>.</li>
+            </ol>
+            <p className="small" style={{ marginTop: 12 }}>Depois, abra o Matchly pelo ícone. Assim você também recebe os avisos.</p>
+            <button className="btn btn-p btn-sm" style={{ marginTop: 16 }} onClick={() => setAjuda(false)}>Entendi</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+const pushSuportado = () => PODE_SW && "PushManager" in window && "Notification" in window;
+const b64ParaBytes = (s) => { const b = atob((s + "=".repeat((4 - (s.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+async function ligarAvisos(papel) {
+  const token = CHAVES.get(papel);
+  if (!token) throw new Error("Faça o cadastro primeiro.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Os avisos foram bloqueados. Libere as notificações do Matchly nas configurações do navegador.");
+  const reg = await navigator.serviceWorker.ready;
+  const { chave } = await api("push_chave");
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ParaBytes(chave) });
+  await api("inscrever", { token, papel, inscricao: sub.toJSON() });
+  try { localStorage.setItem("matchly:avisos-" + papel, "1"); } catch (e) { /* segue */ }
+}
+function BotaoAvisos({ papel, ctx, texto }) {
+  const [estado, setEstado] = useState(() => { try { return localStorage.getItem("matchly:avisos-" + papel) === "1" && Notification.permission === "granted" ? "ligado" : "desligado"; } catch (e) { return "desligado"; } });
+  if (!AO_VIVO || !CHAVES.get(papel)) return null;
+  if (!pushSuportado()) {
+    if (EH_IPHONE && !NO_APP) return <div className="note small" style={{ marginBottom: 14 }}>No iPhone, para receber avisos, primeiro coloque o Matchly na tela de início. <BotaoInstalar compacto /></div>;
+    return null;
+  }
+  if (estado === "ligado") return null;
+  const ligar = async () => {
+    setEstado("ligando");
+    try { await ligarAvisos(papel); setEstado("ligado"); ctx.say("Avisos ligados neste aparelho."); }
+    catch (e) { setEstado("desligado"); ctx.say(e.message); }
+  };
+  return (
+    <div className="note row" style={{ marginBottom: 14, gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
+      <span className="row small" style={{ gap: 8 }}><Ic n="bell" s={18} />{texto}</span>
+      <button className="btn btn-p btn-sm" disabled={estado === "ligando"} onClick={ligar}>{estado === "ligando" ? "Ligando…" : "Ligar avisos"}</button>
+    </div>
+  );
+}
+
+/* ---- senha de 6 números ---- */
+function CampoSenha({ id, valor, onChange, rotulo = "Senha de 6 números", dica }) {
+  const [ver, setVer] = useState(false);
+  return (
+    <Field label={rotulo} hint={dica}>
+      <div className="row" style={{ gap: 8 }}>
+        <input id={id} className="input" type={ver ? "text" : "password"} inputMode="numeric" autoComplete="new-password" maxLength={6}
+          value={valor} onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="••••••" style={{ letterSpacing: ver ? 2 : 6, maxWidth: 200 }} />
+        <button type="button" className="btn btn-g btn-sm" onClick={() => setVer(!ver)}>{ver ? "Esconder" : "Mostrar"}</button>
+      </div>
+    </Field>
+  );
+}
+function DefinirSenha({ papel, ctx, loginInicial = "", jaTem }) {
+  const [login, setLogin] = useState(loginInicial);
+  const [senha, setSenha] = useState("");
+  const [ok, setOk] = useState(jaTem || "");
+  const [erro, setErro] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const salvar = async () => {
+    if (!/^\d{6}$/.test(senha)) return setErro("A senha precisa ter 6 números.");
+    setEnviando(true); setErro("");
+    try { const r = await api("definir_senha", { token: CHAVES.get(papel), papel, login, senha }); setOk(r.login); setSenha(""); ctx.say("Senha salva. Agora você entra de qualquer aparelho."); }
+    catch (e) { setErro(e.message); } finally { setEnviando(false); }
+  };
+  return (
+    <div>
+      {ok && <p className="small" style={{ marginBottom: 12 }}><Ic n="checkCircle" s={15} /> Você entra de outro aparelho com <b>{ok}</b> e a sua senha. Para trocar a senha, digite uma nova abaixo.</p>}
+      <Field label={papel === "empresa" ? "WhatsApp ou e-mail" : "Seu WhatsApp"}>
+        <input className="input" inputMode={papel === "empresa" ? "email" : "tel"} value={login} onChange={(e) => setLogin(papel === "empresa" && /[a-z@]/i.test(e.target.value) ? e.target.value : mascaraTel(e.target.value))} placeholder="(11) 90000-0000" />
+      </Field>
+      <CampoSenha valor={senha} onChange={setSenha} rotulo={ok ? "Nova senha de 6 números" : "Crie uma senha de 6 números"} />
+      {erro && <div className="small" style={{ color: "var(--bad)", marginBottom: 10 }}>{erro}</div>}
+      <button className="btn btn-p btn-sm" disabled={enviando} onClick={salvar}>{enviando ? "Salvando…" : ok ? "Trocar senha" : "Salvar senha"}</button>
+    </div>
+  );
+}
+
+/* ---- entrar em outro aparelho ---- */
+function Entrar({ ctx }) {
+  const [papel, setPapel] = useState(ctx.role === "Contratante" ? "empresa" : "candidato");
+  const [login, setLogin] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [esqueci, setEsqueci] = useState(false);
+  const entrar = async () => {
+    if (!/^\d{6}$/.test(senha)) return setErro("A senha tem 6 números.");
+    setEnviando(true); setErro("");
+    try {
+      const r = await api("entrar", { papel, login, senha });
+      CHAVES.set(papel, r.token);
+      if (papel === "empresa") { ctx.setRole("Contratante"); ctx.say(`Bem-vindo(a) de volta, ${String(r.nome || "").split(" ")[0]}!`); ctx.go("recruiter"); return; }
+      if (r.perfil?.profile?.name) { ctx.setProfile({ ...EMPTY_PROFILE, ...r.perfil.profile }); if (r.perfil.prefs) ctx.setPrefs({ ...EMPTY_PREFS, ...r.perfil.prefs }); }
+      ctx.setApps([]); ctx.setLogged(true); ctx.sincronizar?.();
+      ctx.say(`Bem-vindo(a) de volta, ${String(r.nome || "").split(" ")[0]}!`); ctx.go("dash");
+    } catch (e) { setErro(e.message); } finally { setEnviando(false); }
+  };
+  return (
+    <div className="wrap" style={{ maxWidth: 520, padding: "48px 24px 80px" }}>
+      <h2>Entrar</h2>
+      <p style={{ marginTop: 8, marginBottom: 22 }}>Use o WhatsApp e a senha de 6 números que você criou no cadastro.</p>
+      <div className="card big">
+        <Field label="Você é">
+          <ChipGroup multi={false} value={papel === "empresa" ? "Quem contrata" : "Quem procura trabalho"} onChange={(v) => setPapel(v === "Quem contrata" ? "empresa" : "candidato")}
+            options={["Quem procura trabalho", "Quem contrata"]} />
+        </Field>
+        <Field label={papel === "empresa" ? "WhatsApp ou e-mail" : "Seu WhatsApp"}>
+          <input id="e-login" className="input" inputMode={papel === "empresa" ? "email" : "tel"} autoComplete="username" value={login}
+            onChange={(e) => setLogin(papel === "empresa" && /[a-z@]/i.test(e.target.value) ? e.target.value : mascaraTel(e.target.value))} placeholder="(11) 90000-0000" />
+        </Field>
+        <CampoSenha id="e-senha" valor={senha} onChange={setSenha} rotulo="Senha de 6 números" />
+        {erro && <div className="note" role="alert" style={{ marginBottom: 14, borderColor: "var(--bad)", color: "var(--bad)" }}>{erro}</div>}
+        <button className="btn btn-p" style={{ width: "100%", padding: "13px 0" }} disabled={enviando} onClick={entrar}>{enviando ? "Entrando…" : "Entrar"}</button>
+        <div className="between" style={{ marginTop: 16, flexWrap: "wrap", gap: 8 }}>
+          <button className="btn btn-g btn-sm" onClick={() => setEsqueci(!esqueci)}>Esqueci a senha</button>
+          <button className="btn btn-g btn-sm" onClick={() => (papel === "empresa" ? ctx.go("hire") : ctx.comecar([]))}>Ainda não tenho cadastro</button>
+        </div>
+        {esqueci && (
+          <div className="note small" style={{ marginTop: 12 }}>
+            Se você ainda está usando o Matchly em outro aparelho, abra por lá {papel === "empresa" ? "a sua área (aba Acesso)" : "Meu perfil"} e crie uma senha nova.
+            Se não tem mais acesso a nenhum aparelho, faça um cadastro novo.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ------------------- ÁREA DE QUEM CONTRATA (banco ligado) ------------------ */
 /* As candidaturas chegam pelo servidor. A tela confere sozinha a cada 10 segundos. */
 const vagaDoBanco = (v) => ({ id: v.id, title: v.titulo, city: v.cidade || "—", model: v.modelo || "Presencial", contract: v.contrato || "CLT",
@@ -3995,6 +4382,7 @@ function RecruiterAoVivo({ ctx }) {
   const [vagaSel, setVagaSel] = useState("todas");
   const [aberto, setAberto] = useState(null);
   const [copiado, setCopiado] = useState(false);
+  const [avaliando, setAvaliando] = useState(null);
   const conhecidas = useRef(null);
 
   const carregar = async () => {
@@ -4033,15 +4421,21 @@ function RecruiterAoVivo({ ctx }) {
       <h2>Área de quem contrata</h2>
       <div className="empty" style={{ marginTop: 20 }}>
         <h3>Você ainda não publicou vagas neste aparelho</h3>
-        <p style={{ marginTop: 8 }}>Publique uma vaga e os currículos chegam aqui, na hora. Se você já publicou em outro aparelho, abra o link de acesso que guardou.</p>
-        <button className="btn btn-p btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("hire")}>Publicar vaga</button>
+        <p style={{ marginTop: 8 }}>Publique uma vaga e os currículos chegam aqui, na hora. Se você já publicou em outro aparelho, entre com seu WhatsApp e senha.</p>
+        <div className="row" style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+          <button className="btn btn-p btn-sm" onClick={() => ctx.go("hire")}>Publicar vaga</button>
+          <button className="btn btn-s btn-sm" onClick={() => { ctx.setRole("Contratante"); ctx.go("entrar"); }}>Entrar</button>
+        </div>
       </div>
     </div>
   );
   if (!dados) return (
     <div className="wrap" style={{ padding: "48px 24px", maxWidth: 720 }}>
       {erro ? <div className="empty"><h3>Não deu para abrir sua área</h3><p style={{ marginTop: 8 }}>{erro}</p>
-        <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={carregar}>Tentar de novo</button></div>
+        <div className="row" style={{ marginTop: 14, gap: 8, justifyContent: "center" }}>
+          <button className="btn btn-s btn-sm" onClick={carregar}>Tentar de novo</button>
+          <button className="btn btn-p btn-sm" onClick={() => { ctx.setRole("Contratante"); ctx.go("entrar"); }}>Entrar com WhatsApp e senha</button>
+        </div></div>
         : <div className="col" style={{ gap: 14 }}>{[1, 2, 3].map((i) => <div key={i} className="skel" style={{ height: 110 }} />)}</div>}
     </div>
   );
@@ -4066,7 +4460,7 @@ function RecruiterAoVivo({ ctx }) {
   return (
     <div className="wrap" style={{ padding: "32px 24px 60px" }}>
       <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
-        <div><h2>{e.nome}</h2>
+        <div><h2 className="row" style={{ gap: 12, flexWrap: "wrap" }}>{e.nome} <Estrelas r={dados.avaliacao} /></h2>
           <p className="muted row" style={{ marginTop: 4, gap: 8 }}>
             <span style={{ width: 8, height: 8, borderRadius: 99, background: "var(--ok)", display: "inline-block" }} />
             Área de quem contrata · atualiza sozinha a cada 10 segundos
@@ -4082,7 +4476,7 @@ function RecruiterAoVivo({ ctx }) {
       </div>
 
       <div className="row" style={{ margin: "20px 0 16px", gap: 4, borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["vagas", "Minhas vagas"], ["acesso", "Link de acesso"]].map(([k, l]) => (
+        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["vagas", "Minhas vagas"], ["acesso", "Acesso"]].map(([k, l]) => (
           <button key={k} className="btn btn-g btn-sm" onClick={() => setTab(k)}
             style={{ borderRadius: 0, borderBottom: "2px solid " + (tab === k ? "var(--wine)" : "transparent"), color: tab === k ? "var(--wine)" : "var(--ink-2)" }}>{l}</button>
         ))}
@@ -4090,6 +4484,7 @@ function RecruiterAoVivo({ ctx }) {
 
       {tab === "cands" && (
         <>
+          <BotaoAvisos papel="empresa" ctx={ctx} texto="Receba um aviso no celular na hora em que chegar um currículo." />
           {vagas.length > 1 && (
             <div className="chips" style={{ marginBottom: 14 }}>
               <button className="chip" data-on={vagaSel === "todas" ? "1" : "0"} onClick={() => setVagaSel("todas")}>Todas as vagas</button>
@@ -4114,7 +4509,8 @@ function RecruiterAoVivo({ ctx }) {
                         <div style={{ width: 40, height: 40, borderRadius: 99, background: "var(--wine-tint)", color: "var(--wine)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 13 }}>{initials(c.candidatos?.nome || cv.nome)}</div>
                         <div><h3 style={{ fontSize: 15 }}>{c.candidatos?.nome || cv.nome}</h3>
                           <div className="muted">{[cv.objetivo, cv.idade ? `${cv.idade} anos` : "", cv.bairro || cv.cidade].filter(Boolean).join(" · ")}</div>
-                          <div className="muted" style={{ marginTop: 2 }}>Para {c.vaga?.title || "vaga encerrada"} · {quandoFoi(c.criada_em)}</div></div>
+                          <div className="muted" style={{ marginTop: 2 }}>Para {c.vaga?.title || "vaga encerrada"} · {quandoFoi(c.criada_em)}</div>
+                          {c.nota_candidato && <div className="row small" style={{ marginTop: 4, gap: 6 }}><Estrelas r={c.nota_candidato} pequeno /> <span className="muted">de quem já contratou</span></div>}</div>
                       </div>
                       <div className="row" style={{ flexWrap: "wrap" }}>
                         {!c.vista && <span className="badge b-wine">Nova</span>}
@@ -4130,6 +4526,9 @@ function RecruiterAoVivo({ ctx }) {
                       {!zap && <button className="btn btn-s btn-sm" onClick={() => mudar(c, "Entrevista")}>Chamar para conversar</button>}
                       <button className="btn btn-s btn-sm" onClick={() => mudar(c, "Contratada")}>Contratei</button>
                       <button className="btn btn-g btn-sm" onClick={() => mudar(c, "Recusada")}>Agora não</button>
+                      {c.etapa === "Contratada" && (c.minha_avaliacao
+                        ? <span className="small" style={{ alignSelf: "center" }}>Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(c.minha_avaliacao)}</span></span>
+                        : <button className="btn btn-s btn-sm" onClick={() => setAvaliando(c)}><span style={{ color: "#C98A00" }}>★</span> Avaliar {(c.candidatos?.nome || cv.nome || "").split(" ")[0]}</button>)}
                     </div>
                   </div>
                 );
@@ -4163,8 +4562,14 @@ function RecruiterAoVivo({ ctx }) {
       )}
 
       {tab === "acesso" && (
+        <>
+        <div className="card" style={{ maxWidth: 680, marginBottom: 16 }}>
+          <h3>Entrar de outro aparelho</h3>
+          <p style={{ marginTop: 8, marginBottom: 14 }}>No outro celular ou computador, toque em <b>Entrar</b>, escolha <b>Quem contrata</b> e use o WhatsApp (ou e-mail) e a senha de 6 números.</p>
+          <DefinirSenha papel="empresa" ctx={ctx} jaTem={dados.conta?.login} loginInicial={dados.conta?.login || ""} />
+        </div>
         <div className="card" style={{ maxWidth: 680 }}>
-          <h3>Guarde este link</h3>
+          <h3>Ou guarde este link</h3>
           <p style={{ marginTop: 8 }}>Ele abre a sua área em qualquer celular ou computador, sem senha. Não mande para outras pessoas: quem tiver o link vê os currículos que você recebeu.</p>
           <input className="input" readOnly value={link} onFocus={(ev) => ev.target.select()} style={{ marginTop: 12, fontSize: 13 }} />
           <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
@@ -4172,6 +4577,14 @@ function RecruiterAoVivo({ ctx }) {
             <a className="btn btn-s btn-sm" href={`https://wa.me/?text=${encodeURIComponent("Meu acesso ao Matchly (não compartilhar): " + link)}`} target="_blank" rel="noopener noreferrer">Mandar para o meu WhatsApp</a>
           </div>
         </div>
+        </>
+      )}
+      {avaliando && (
+        <JanelaAvaliar titulo={`Como foi o trabalho de ${(avaliando.candidatos?.nome || avaliando.curriculo?.nome || "").split(" ")[0]}?`}
+          sub="A nota aparece para outras pessoas que forem contratar. Seja justo: ela ajuda quem trabalhou bem."
+          dica="Chegou no horário? Fez o combinado? Contrataria de novo?"
+          fechar={() => setAvaliando(null)}
+          onEnviar={async (nota, comentario) => { await api("avaliar", { token, papel: "empresa", candidaturaId: avaliando.id, nota, comentario }); ctx.say("Avaliação enviada. Obrigado!"); carregar(); }} />
       )}
 
       {aberto && (
