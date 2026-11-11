@@ -44,7 +44,9 @@ const sai = (res, status, dados) => res.status(status).json(dados);
 
 const CONTRATOS = ["CLT", "PJ", "Temporário", "Estágio", "Aprendiz", "Freelancer", "Diária", "Por hora"];
 const UNIDADES = ["/hora", "/dia", "/mês"];
-const ETAPAS = ["Candidatura enviada", "Entrevista", "Contratada", "Recusada"];
+// o que quem contrata pode fazer: chamar para conversar, enviar proposta, cancelar a proposta (volta para conversa) ou não seguir.
+// "Contratada" só acontece quando o trabalhador aceita a proposta (acao=responder_proposta).
+const ETAPAS = ["Candidatura enviada", "Entrevista", "Proposta", "Recusada"];
 const PAPEIS = ["empresa", "candidato"];
 // vaga que pede dinheiro do candidato vai para revisão em vez de ir ao ar
 const PEDE_DINHEIRO = /(pagar|pague|pagamento|taxa|dep[oó]sito|pix|boleto|investimento).{0,40}(inscri|curso|material|uniforme|cadastro|exame|kit|treinamento|vaga)/i;
@@ -52,7 +54,7 @@ const PEDE_DINHEIRO = /(pagar|pague|pagamento|taxa|dep[oó]sito|pix|boleto|inves
 // limite simples contra abuso (por instância): N chamadas por IP e por ação a cada hora
 const usos = new Map();
 const LIMITES = { publicar: 20, candidatar: 40, cadastro: 10, entrar: 30, definir_senha: 20, avaliar: 60, inscrever: 30,
-  etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400, salvar_perfil: 300, talentos: 600, convidar: 200, recusar_convite: 100 };
+  etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400, salvar_perfil: 300, talentos: 600, convidar: 200, recusar_convite: 100, responder_proposta: 100 };
 function excedeu(req, acao) {
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "?";
   const k = `${acao}:${ip}`;
@@ -421,6 +423,7 @@ export default async function handler(req, res) {
         if (!r.length) return sai(res, 404, { erro: "Candidatura não encontrada." });
         const v = vagas.find((x) => x.id === r[0].vaga_id);
         const textos = { Entrevista: [`${empresa.nome} quer conversar com você`, "Fique de olho no seu WhatsApp."],
+          Proposta: [`${empresa.nome} quer contratar você!`, "Abra o Matchly para aceitar ou recusar a proposta."],
           Contratada: [`Você foi contratado(a) por ${empresa.nome}!`, "Depois do serviço, conte como foi: avalie a empresa no Matchly."],
           Recusada: [`${empresa.nome} seguiu com outra pessoa`, "Continue se candidatando. Outras vagas vão aparecer."] };
         if (textos[d.etapa]) await avisarCandidato(r[0].candidato_id, "respostas", { titulo: textos[d.etapa][0], texto: `${v?.titulo ? `Vaga: ${v.titulo}. ` : ""}${textos[d.etapa][1]}` });
@@ -498,6 +501,25 @@ export default async function handler(req, res) {
         if (e.status === 409) return sai(res, 409, { token, erro: "Você já se candidatou a esta vaga." });
         throw e;
       }
+    }
+
+    // o trabalhador responde à proposta de contratação
+    if (acao === "responder_proposta") {
+      const candidato = await candidatoDoToken(d.token);
+      if (!candidato || !uuid(d.id)) return sai(res, 401, { erro: "Acesso não encontrado." });
+      const novo = d.aceitar ? "Contratada" : "Proposta recusada";
+      const r = await db(`candidaturas?id=eq.${d.id}&candidato_id=eq.${candidato.id}&etapa=eq.Proposta`, { method: "PATCH", prefer: "return=representation",
+        body: { etapa: novo, atualizada_em: new Date().toISOString() } });
+      if (!r.length) return sai(res, 409, { erro: "Essa proposta não está mais disponível." });
+      const [v] = await db(`vagas?select=titulo,empresa_id&id=eq.${r[0].vaga_id}&limit=1`);
+      const primeiro = String(candidato.nome || "").split(" ")[0];
+      if (v) {
+        const titulo = d.aceitar ? `${primeiro} aceitou a sua proposta!` : `${primeiro} recusou a proposta`;
+        const texto = d.aceitar ? `Para a vaga de ${v.titulo}. Combine os detalhes pelo WhatsApp. Depois do serviço, avalie no Matchly.` : `Para a vaga de ${v.titulo}. Você pode procurar outras pessoas em Encontrar pessoas.`;
+        await avisar("empresa", v.empresa_id, { title: titulo, body: texto, url: "/#area" });
+        await avisarEmpresaPorEmail(v.empresa_id, titulo, texto);
+      }
+      return sai(res, 200, { ok: true, etapa: novo });
     }
 
     if (acao === "recusar_convite") {

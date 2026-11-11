@@ -597,7 +597,9 @@ const ACESSO_LINK = (() => {
 })();
 try { if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual"; } catch (e) { /* segue */ }
 const linkDeAcesso = (t) => `${window.location.origin}/#acesso=${t}`;
-const ETAPA_EMPRESA = { "Candidatura enviada": "Nova", "Entrevista": "Chamado para conversar", "Contratada": "Contratado(a)", "Recusada": "Não seguiu" };
+const ETAPA_EMPRESA = { "Candidatura enviada": "Nova", "Entrevista": "Em conversa", "Proposta": "Proposta enviada", "Contratada": "Contratado(a)", "Recusada": "Não seguiu", "Proposta recusada": "Recusou a proposta" };
+const PASSOS_EMPRESA = ["Recebida", "Conversa", "Proposta", "Contratado"];
+const passoEmpresa = (e) => ({ "Candidatura enviada": 0, "Entrevista": 1, "Proposta": 2, "Contratada": 3 }[e] ?? 0);
 const quandoFoi = (iso) => {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return "agora"; if (s < 3600) return `há ${Math.floor(s / 60)} min`; if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
@@ -630,6 +632,8 @@ const ICON_PATHS = {
   more: "M5 12h.01 M12 12h.01 M19 12h.01",
   bell: "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z M10 20.5a2 2 0 0 0 4 0",
   download: "M12 4v11 M7 10.5l5 5 5-5 M5 20h14",
+  users: "M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20c.8-3.4 3.3-5.5 6.5-5.5s5.7 2.1 6.5 5.5 M16 4.3a3.5 3.5 0 0 1 0 6.4 M18 14.8c1.8.8 3 2.6 3.5 5.2",
+  plus: "M12 5v14 M5 12h14 M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z",
   moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
   sun: "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M12 2.5v2 M12 19.5v2 M4.6 4.6 6 6 M18 18l1.4 1.4 M2.5 12h2 M19.5 12h2 M4.6 19.4 6 18 M18 6l1.4-1.4",
   chat: "M4 5h16v11H9l-5 4z",
@@ -784,7 +788,8 @@ export default function App() {
     if (h === "#instalar") return "instalar";
     if (h === "#avisos" && GUARDADO?.logged) return "alerts";
     if (h === "#candidaturas" && GUARDADO?.logged) return "apps";
-    return GUARDADO?.logged ? "dash" : "landing";
+    if (GUARDADO?.logged) return "dash";
+    return AO_VIVO && CHAVES.get("empresa") ? "recruiter" : "landing";
   });
   const [openJob, setOpenJob] = useState(null);
   const [logged, setLogged] = useState(!!GUARDADO?.logged);
@@ -884,6 +889,7 @@ export default function App() {
     return () => window.removeEventListener("hashchange", f);
   }, []);
   const [sinc, setSinc] = useState(0);
+  const [abaEmpresa, setAbaEmpresa] = useState("cands");
   useEffect(() => {
     if (!AO_VIVO) return;
     let vivo = true;
@@ -902,12 +908,14 @@ export default function App() {
             if (!c) return a;
             const vista = c.vista && !a.vista;
             const mudou = c.etapa !== a.stage && c.etapa !== "Candidatura enviada";
+            if (mudou && c.etapa === "Proposta recusada") return { ...a, stage: c.etapa };
             if (c.etapa === "Convite recusado") return { ...a, stage: "Convite recusado" };
             const avaliou = c.minha_avaliacao || a.avaliou || null;
             const nomes = { vagaNome: c.vaga || a.vagaNome, empresaNome: c.empresa || a.empresaNome };
             if (!vista && !mudou) return avaliou !== a.avaliou || nomes.vagaNome !== a.vagaNome ? { ...a, avaliou, ...nomes } : a;
             const nome = c.empresa || "A empresa";
-            if (mudou) avisos.push(c.etapa === "Entrevista" ? [`${nome} quer conversar com você`, `Vaga: ${c.vaga}. Fique de olho no seu WhatsApp.`, "mic"]
+            if (mudou) avisos.push(c.etapa === "Proposta" ? [`${nome} quer contratar você!`, `Vaga: ${c.vaga}. Veja em Candidaturas e aceite ou recuse.`, "star"]
+              : c.etapa === "Entrevista" ? [`${nome} quer conversar com você`, `Vaga: ${c.vaga}. Fique de olho no seu WhatsApp.`, "mic"]
               : c.etapa === "Contratada" ? [`Você foi contratado(a) por ${nome}!`, `Vaga: ${c.vaga}. Depois, conte como foi: avalie a empresa.`, "star"]
               : [`${nome} seguiu com outra pessoa`, `Vaga: ${c.vaga}. Continue se candidatando, outras vagas vão aparecer.`, "file"]);
             else avisos.push([`${nome} viu seu currículo`, `Vaga: ${c.vaga}.`, "checkCircle"]);
@@ -994,19 +1002,30 @@ export default function App() {
   const setFolder = (id, f) => setSaved((s) => ({ ...s, [id]: f }));
 
   const ctx = { profile, setProfile, prefs, setPrefs, matches, saved, toggleSave, setFolder, apply, apps, setApps, go, say, setOpenJob, hidden, setHidden, feed, logged, autopilot, setAutopilot,
-    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1), sairDaConta, recarregarVagas: () => recarregar.current() };
+    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1), sairDaConta, abaEmpresa, setAbaEmpresa,
+    sairDaEmpresa: () => { CHAVES.del("empresa"); try { localStorage.removeItem("matchly:avisos-empresa"); } catch (e) { /* segue */ } setRole("Candidato"); setAbaEmpresa("cands"); go("landing"); setToast("Você saiu da conta de quem contrata."); }, recarregarVagas: () => recarregar.current() };
 
+  // conta de quem contrata: fica entrada até tocar em "Sair da conta"
+  const temEmpresa = AO_VIVO && !logged && !!CHAVES.get("empresa");
+  const comMenu = logged || temEmpresa;
+  const MENU_EMPRESA = [["cands", "users", "Candidatos"], ["talentos", "search", "Encontrar pessoas"], ["vagas", "briefcase", "Minhas vagas"], ["hire", "plus", "Publicar vaga"], ["conta", "user", "Minha conta"]];
+  const irEmpresa = (k) => { if (k === "hire") return go("hire"); setAbaEmpresa(k); go("recruiter"); };
+  const naAbaEmpresa = (k) => (k === "hire" ? view === "hire" : view === "recruiter" && abaEmpresa === k && !openJob);
   const navItems = [["dash", "Início"], ["feed", "Vagas"], ["apps", "Candidaturas"], ["cv", "Meu currículo"], ["profile", "Meu perfil"], ["hub", "Mais"]];
   const unread = notifs.filter((n) => !n.read).length;
 
   return (
-    <div className="jm" data-theme={dark ? "dark" : "light"} data-bar={barra && view !== "donate" ? "1" : "0"} data-logged={logged ? "1" : "0"}>
+    <div className="jm" data-theme={dark ? "dark" : "light"} data-bar={barra && view !== "donate" ? "1" : "0"} data-logged={comMenu ? "1" : "0"}>
       <style>{CSS}</style>
 
       <header className="hdr">
         <div className="wrap inner">
-          <Logo onClick={() => go(logged ? "dash" : "landing")} />
-          {logged ? (
+          <Logo onClick={() => (temEmpresa ? irEmpresa("cands") : go(logged ? "dash" : "landing"))} />
+          {temEmpresa ? (
+            <nav className="nav">
+              {MENU_EMPRESA.map(([k, , l]) => <button key={k} data-on={naAbaEmpresa(k) ? "1" : "0"} onClick={() => irEmpresa(k)}>{l}</button>)}
+            </nav>
+          ) : logged ? (
             <nav className="nav">
               {navItems.map(([v, l]) => (
                 <button key={v} data-on={view === v ? "1" : "0"} onClick={() => go(v)}>{l}</button>
@@ -1027,7 +1046,7 @@ export default function App() {
               </button>
             )}
             <button className="btn btn-g" onClick={() => setDark(!dark)} title="Alternar modo escuro" aria-label="Alternar modo escuro"><Ic n={dark ? "sun" : "moon"} s={18} /></button>
-            {!logged && (
+            {!comMenu && (
               <>
                 <button className="btn btn-g hide-m" onClick={entrar}>Entrar</button>
                 <button className="btn btn-p btn-sm" onClick={() => go("cadastro")}><span className="hide-m">Cadastre-se grátis</span><span className="only-m">Cadastrar</span></button>
@@ -1037,7 +1056,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className={logged ? "pad-m" : ""}>
+      <main className={comMenu ? "pad-m" : ""}>
         {openJob ? (JOBS.some((j) => j.id === openJob) ? <JobPage id={openJob} ctx={ctx} /> : <ErrorPage kind="errjob" ctx={ctx} />) :
           companyOpen && companyOf(companyOpen) ? <CompanyPage id={companyOpen} ctx={ctx} /> :
           view === "hub" ? <Hub go={go} role={role} setRole={setRole} ctx={ctx} /> :
@@ -1078,6 +1097,13 @@ export default function App() {
           view === "stats" ? <Stats ctx={ctx} /> : null}
       </main>
 
+      {temEmpresa && (
+        <nav className="mobnav">
+          {MENU_EMPRESA.map(([k, i, l]) => (
+            <button key={k} data-on={naAbaEmpresa(k) ? "1" : "0"} onClick={() => irEmpresa(k)}><Ic n={i} s={21} />{{ talentos: "Pessoas", vagas: "Vagas", hire: "Publicar", conta: "Conta" }[k] || l}</button>
+          ))}
+        </nav>
+      )}
       {logged && (
         <nav className="mobnav">
           {[["dash", "home", "Início"], ["feed", "briefcase", "Vagas"], ["apps", "list", "Candidaturas"], ["cv", "idcard", "Currículo"], ["profile", "user", "Perfil"], ["hub", "more", "Mais"]].map(([v, i, l]) => (
@@ -1087,7 +1113,7 @@ export default function App() {
           ))}
         </nav>
       )}
-      {(!logged || view === "landing") && view !== "signup" && view !== "cvedit" ? <Rodape go={go} comecar={comecar} /> : null}
+      {(!comMenu || view === "landing") && view !== "signup" && view !== "cvedit" ? <Rodape go={go} comecar={comecar} /> : null}
       {logged && <Assistant ctx={ctx} />}
       {barra && view !== "donate" && <FaixaDoacao go={go} fechar={fecharBarra} />}
       {toast && <div className="toast" role="status">{toast}</div>}
@@ -2614,44 +2640,118 @@ function Saved({ ctx }) {
 
 /* ----------------------------- CANDIDATURAS ----------------------------- */
 const STAGES = ["Interessadas", "Candidatura enviada", "Processo seletivo", "Entrevista", "Segunda entrevista", "Oferta", "Contratada", "Recusada"];
+/* Andamento de uma candidatura, em passos simples */
+const PASSOS = ["Enviada", "Empresa viu", "Conversa", "Proposta", "Contratado"];
+const FIM_SEM = ["Recusada", "Proposta recusada", "Convite recusado"];
+function passoDe(a) {
+  const m = { "Interessadas": 0, "Candidatura enviada": a.vista ? 1 : 0, "Processo seletivo": 1, "Entrevista": 2, "Segunda entrevista": 2, "Oferta": 3, "Proposta": 3, "Contratada": 4 };
+  return m[a.stage] ?? 0;
+}
+function Andamento({ a }) {
+  const atual = passoDe(a), fim = FIM_SEM.includes(a.stage);
+  return (
+    <div className="row" style={{ gap: 0, marginTop: 12, alignItems: "flex-start" }} aria-label={`Etapa: ${PASSOS[atual]}`}>
+      {PASSOS.map((p, i) => {
+        const feito = !fim && i <= atual;
+        return (
+          <div key={p} style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
+            <div className="row" style={{ alignItems: "center", gap: 0 }}>
+              <span style={{ flex: 1, height: 3, background: i === 0 ? "transparent" : feito ? "var(--wine)" : "var(--line)" }} />
+              <span style={{ width: 14, height: 14, borderRadius: 99, flex: "none", background: feito ? "var(--wine)" : "var(--surface)", border: `2px solid ${feito ? "var(--wine)" : "var(--line)"}` }} />
+              <span style={{ flex: 1, height: 3, background: i === PASSOS.length - 1 ? "transparent" : !fim && i < atual ? "var(--wine)" : "var(--line)" }} />
+            </div>
+            <div style={{ fontSize: 11, marginTop: 4, color: feito && i === atual ? "var(--wine)" : "var(--ink-3)", fontWeight: feito && i === atual ? 600 : 400 }}>{p}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Applications({ ctx }) {
   const { apps, setApps } = ctx;
-  const [over, setOver] = useState(null);
   const [vendo, setVendo] = useState(null);
   const [avaliando, setAvaliando] = useState(null);
-  const drag = useRef(null);
-  const move = (id, dir) => setApps(apps.map((a) => {
-    if (a.id !== id) return a;
-    const i = Math.max(0, Math.min(STAGES.length - 1, STAGES.indexOf(a.stage) + dir));
-    return { ...a, stage: STAGES[i] };
-  }));
-  const drop = (stage) => { if (drag.current) { setApps(apps.map((a) => (a.id === drag.current ? { ...a, stage } : a))); ctx.say("Candidatura movida para " + stage); } setOver(null); drag.current = null; };
+  const [respondendo, setRespondendo] = useState(null);
+  const infoDe = (a) => { const j = JOBS.find((x) => x.id === a.jobId); return { j, titulo: j ? j.title : a.vagaNome || "Vaga", empresa: (j && companyOf(j.companyId)?.name) || a.empresaNome || "A empresa" }; };
+  const responder = async (a, aceitar) => {
+    setRespondendo(a.id);
+    try {
+      if (a.remoteId && AO_VIVO) await api("responder_proposta", { token: CHAVES.get("candidato"), id: a.remoteId, aceitar });
+      setApps(apps.map((x) => (x.id === a.id ? { ...x, stage: aceitar ? "Contratada" : "Proposta recusada" } : x)));
+      ctx.say(aceitar ? "Parabéns! Você aceitou a proposta. Combine os detalhes pelo WhatsApp." : "Tudo bem. A empresa vai saber que você recusou.");
+    } catch (e) { ctx.say(e.message); } finally { setRespondendo(null); }
+  };
+  const propostas = apps.filter((a) => a.stage === "Proposta" || a.stage === "Oferta");
+  const convites = apps.filter((a) => a.stage === "Convite");
+  const andamento = apps.filter((a) => !["Convite", "Proposta", "Oferta", "Convite recusado"].includes(a.stage) && (a.vagaNome || JOBS.some((x) => x.id === a.jobId)));
+  const ativas = andamento.filter((a) => !FIM_SEM.includes(a.stage)), encerradas = andamento.filter((a) => FIM_SEM.includes(a.stage));
+  const situacao = (a) => {
+    if (a.externo) return "Você se candidatou no site da empresa. Acompanhe por lá.";
+    return { 0: "Seu currículo chegou. Agora é esperar a empresa ver.", 1: "A empresa já viu o seu currículo.", 2: "A empresa quer conversar com você. Fique de olho no WhatsApp.", 3: "A empresa enviou uma proposta.", 4: "Você foi contratado(a)!" }[passoDe(a)];
+  };
+
+  const Cartao = ({ a }) => {
+    const { j, titulo, empresa } = infoDe(a);
+    const fim = FIM_SEM.includes(a.stage);
+    return (
+      <div className="card">
+        <div className="between" style={{ gap: 10, flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, color: "var(--ink)" }}>{titulo}</div>
+            <div className="muted">{empresa}{j ? ` · ${payLabel(j)}` : ""} · desde {a.date}</div>
+          </div>
+          {a.stage === "Contratada" ? <span className="badge b-green">Contratado(a)</span> : fim ? <span className="badge">{a.stage === "Proposta recusada" ? "Você recusou" : "Não seguiu"}</span> : null}
+        </div>
+        {!fim && <Andamento a={a} />}
+        <p className="small" style={{ marginTop: 10 }}>{fim ? (a.stage === "Proposta recusada" ? "Você recusou a proposta." : "A empresa seguiu com outra pessoa. Continue se candidatando: outras vagas vão aparecer.") : situacao(a)}</p>
+        <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+          {a.remoteId && a.stage === "Contratada" && (a.avaliou
+            ? <span className="small">Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(a.avaliou)}</span></span>
+            : <button className="btn btn-s btn-sm" onClick={() => setAvaliando(a)}><span style={{ color: "#C98A00" }}>★</span> Avaliar a empresa</button>)}
+          {a.cv && <button className="btn btn-g btn-sm" onClick={() => setVendo(a)}><Ic n="file" s={14} /> Currículo enviado</button>}
+          {j && <button className="btn btn-g btn-sm" onClick={() => ctx.setOpenJob(j.id)}>Ver a vaga</button>}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="wrap" style={{ padding: "32px 24px 60px" }}>
-      <div className="between"><div><h2>Minhas candidaturas</h2>
-        <p className="muted" style={{ marginTop: 4 }}>Arraste os cards entre etapas — ou use as setas no celular.</p></div>
-        <span className="badge b-wine">{apps.filter((a) => STAGES.includes(a.stage)).length} em andamento</span></div>
-
+    <div className="wrap" style={{ padding: "32px 24px 60px", maxWidth: 820 }}>
+      <h2>Minhas candidaturas</h2>
+      <p className="muted" style={{ marginTop: 4 }}>Aqui você vê em que passo está cada vaga: enviada, empresa viu, conversa, proposta e contratado.</p>
       <div style={{ marginTop: 16 }}><BotaoAvisos papel="candidato" ctx={ctx} texto="Receba um aviso no celular quando a empresa responder." /></div>
-      {apps.some((a) => a.stage === "Convite") && (
+
+      {propostas.map((a) => {
+        const { j, titulo, empresa } = infoDe(a);
+        return (
+          <div key={a.id} className="card" style={{ marginTop: 16, borderColor: "var(--wine)", borderWidth: 2 }}>
+            <span className="eyebrow">Proposta de contratação</span>
+            <h3 style={{ marginTop: 8, fontSize: 19 }}>{empresa} quer contratar você!</h3>
+            <p style={{ marginTop: 6 }}>Para a vaga de <b>{titulo}</b>{j ? ` · ${payLabel(j)} · ${j.city}` : ""}.</p>
+            <p className="small" style={{ marginTop: 8 }}>Se aceitar, a empresa fica sabendo na hora e vocês combinam os detalhes pelo WhatsApp. Nunca pague nada para começar a trabalhar.</p>
+            <div className="row" style={{ marginTop: 14, gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-p" disabled={respondendo === a.id} onClick={() => responder(a, true)}><Ic n="check" s={16} /> Aceitar a proposta</button>
+              <button className="btn btn-s" disabled={respondendo === a.id} onClick={() => responder(a, false)}>Recusar</button>
+              {j && <button className="btn btn-g btn-sm" onClick={() => ctx.setOpenJob(j.id)}>Ver a vaga</button>}
+            </div>
+          </div>
+        );
+      })}
+
+      {convites.length > 0 && (
         <div style={{ marginTop: 18 }}>
           <h3 style={{ fontSize: 16, marginBottom: 10 }}>Convites para você</h3>
           <div className="col" style={{ gap: 10 }}>
-            {apps.filter((a) => a.stage === "Convite").map((a) => {
-              const j = JOBS.find((x) => x.id === a.jobId);
+            {convites.map((a) => {
+              const { j, titulo, empresa } = infoDe(a);
               return (
                 <div key={a.id} className="card" style={{ borderColor: "var(--wine)" }}>
-                  <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-                    <span style={{ color: "#C98A00", fontSize: 22 }}>★</span>
-                    <div className="grow" style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 600 }}>{a.empresaNome || (j && companyOf(j.companyId)?.name) || "Uma empresa"} convidou você</div>
-                      <div className="muted">Para a vaga de {j ? j.title : a.vagaNome}{j ? ` · ${payLabel(j)} · ${j.city}` : ""}</div>
-                    </div>
-                  </div>
-                  <p className="small" style={{ marginTop: 10 }}>Quem contrata viu o seu perfil no Matchly e acha que você combina. Se quiser, envie o seu currículo: só então a empresa vê o seu WhatsApp.</p>
+                  <div style={{ fontWeight: 600 }}>{empresa} convidou você</div>
+                  <div className="muted">Para a vaga de {titulo}{j ? ` · ${payLabel(j)} · ${j.city}` : ""}</div>
+                  <p className="small" style={{ marginTop: 10 }}>Quem contrata viu o seu perfil e acha que você combina. Se quiser, envie o seu currículo: só então a empresa vê o seu WhatsApp.</p>
                   <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
-                    {j ? <button className="btn btn-p btn-sm" onClick={() => { ctx.setOpenJob(j.id); ctx.setRevisarVaga?.(j.id); }}>Ver a vaga e responder</button>
+                    {j ? <button className="btn btn-p btn-sm" onClick={() => { ctx.setOpenJob(j.id); ctx.setRevisarVaga?.(j.id); }}>Enviar meu currículo</button>
                       : <span className="small muted">Essa vaga já foi encerrada.</span>}
                     <button className="btn btn-g btn-sm" onClick={async () => {
                       try { await api("recusar_convite", { token: CHAVES.get("candidato"), id: a.remoteId }); } catch (e) { /* segue */ }
@@ -2664,38 +2764,20 @@ function Applications({ ctx }) {
           </div>
         </div>
       )}
-      <div className="kanban" style={{ marginTop: 22 }}>
-        {STAGES.map((s) => (
-          <div key={s} className="kcol" data-over={over === s ? "1" : "0"}
-            onDragOver={(e) => { e.preventDefault(); setOver(s); }} onDragLeave={() => setOver(null)} onDrop={() => drop(s)}>
-            <div className="between" style={{ marginBottom: 10 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{s}</span>
-              <span className="muted">{apps.filter((a) => a.stage === s).length}</span>
-            </div>
-            {apps.filter((a) => a.stage === s && (a.vagaNome || JOBS.some((x) => x.id === a.jobId))).map((a) => {
-              const j = JOBS.find((x) => x.id === a.jobId);
-              return (
-                <div key={a.id} className="kcard" draggable onDragStart={() => (drag.current = a.id)}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{j ? j.title : a.vagaNome}</div>
-                  <div className="muted" style={{ marginTop: 2 }}>{j ? companyOf(j.companyId)?.name : a.empresaNome}</div>
-                  <div className="muted" style={{ marginTop: 6 }}>{j ? `${payLabel(j)} · ` : "Vaga encerrada · "}desde {a.date}</div>
-                  {a.remoteId && a.stage === "Contratada" && (a.avaliou
-                    ? <div className="small" style={{ marginTop: 6 }}>Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(a.avaliou)}</span></div>
-                    : <button className="btn btn-s btn-sm" style={{ marginTop: 8 }} onClick={() => setAvaliando(a)}><span style={{ color: "#C98A00" }}>★</span> Avaliar a empresa</button>)}
-                  {a.notes && <div className="small" style={{ marginTop: 8 }}>{a.notes}</div>}
-                  {a.cv && <button className="btn btn-g btn-sm" style={{ marginTop: 6, paddingLeft: 0, color: "var(--wine)" }} onClick={() => setVendo(a)}><Ic n="file" s={14} /> Ver currículo enviado</button>}
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn btn-g btn-sm" onClick={() => move(a.id, -1)} aria-label="Etapa anterior">←</button>
-                    <button className="btn btn-g btn-sm" onClick={() => move(a.id, 1)} aria-label="Próxima etapa">→</button>
-                    {j && <button className="btn btn-g btn-sm grow" onClick={() => ctx.setOpenJob(j.id)}>Abrir</button>}
-                  </div>
-                </div>
-              );
-            })}
-            {apps.filter((a) => a.stage === s).length === 0 && <div className="muted" style={{ padding: "10px 2px" }}>Vazio</div>}
-          </div>
-        ))}
-      </div>
+
+      <h3 style={{ fontSize: 16, margin: "24px 0 10px" }}>Em andamento ({ativas.length})</h3>
+      {ativas.length === 0 ? (
+        <div className="empty"><h3>Nenhuma candidatura em andamento</h3><p style={{ marginTop: 8 }}>Escolha uma vaga e toque em Candidatar-me. Você acompanha tudo por aqui.</p>
+          <button className="btn btn-p btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("feed")}>Ver vagas</button></div>
+      ) : <div className="col" style={{ gap: 12 }}>{ativas.map((a) => <Cartao key={a.id} a={a} />)}</div>}
+
+      {encerradas.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 16, margin: "24px 0 10px" }}>Encerradas ({encerradas.length})</h3>
+          <div className="col" style={{ gap: 12 }}>{encerradas.map((a) => <Cartao key={a.id} a={a} />)}</div>
+        </>
+      )}
+
       {avaliando && (
         <JanelaAvaliar titulo={`Como foi trabalhar ${avaliando.empresaNome ? `com ${avaliando.empresaNome}` : "nessa vaga"}?`}
           sub="Sua nota aparece na página da empresa e ajuda outras pessoas. Seu nome não aparece."
@@ -4854,11 +4936,62 @@ function EncontrarPessoas({ ctx, token, vagas, aoConvidar }) {
   );
 }
 
+function SairEmpresa({ sair }) {
+  const [c, setC] = useState(false);
+  return !c ? <button className="btn btn-s btn-sm" onClick={() => setC(true)}>Sair da conta</button> : (
+    <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      <span className="small">Sair neste aparelho?</span>
+      <button className="btn btn-p btn-sm" onClick={sair}>Sim, sair</button>
+      <button className="btn btn-g btn-sm" onClick={() => setC(false)}>Cancelar</button>
+    </div>
+  );
+}
+
+/* Contratar em 3 passos: chamar para conversar → enviar proposta → a pessoa aceita */
+function EtapasEmpresa({ c, nome, zap, abrir, mudar, avaliar }) {
+  const fim = c.etapa === "Recusada" || c.etapa === "Proposta recusada";
+  const atual = passoEmpresa(c.etapa);
+  const texto = {
+    "Candidatura enviada": `Próximo passo: veja o currículo e chame ${nome} para conversar.`,
+    "Entrevista": `Conversaram e gostou? Envie a proposta de contratação. ${nome} aceita ou recusa pelo Matchly.`,
+    "Proposta": `Proposta enviada. Aguardando a resposta de ${nome}.`,
+    "Contratada": `${nome} aceitou a proposta. Combine os detalhes pelo WhatsApp.`,
+    "Recusada": "Você não seguiu com essa pessoa.",
+    "Proposta recusada": `${nome} recusou a proposta.`,
+  }[c.etapa] || "";
+  return (
+    <div style={{ marginTop: 12 }}>
+      {!fim && (
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          {PASSOS_EMPRESA.map((p, i) => (
+            <span key={p} className="small" style={{ padding: "3px 10px", borderRadius: 99, fontWeight: i === atual ? 600 : 400,
+              background: i <= atual ? "var(--wine-tint)" : "var(--surface-2)", color: i <= atual ? "var(--wine)" : "var(--ink-3)" }}>{i + 1}. {p}</span>
+          ))}
+        </div>
+      )}
+      <p className="small" style={{ marginTop: 8, color: "var(--ink)" }}>{texto}</p>
+      <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+        <button className={"btn btn-sm " + (c.etapa === "Candidatura enviada" ? "btn-s" : "btn-g")} onClick={abrir}>Ver currículo</button>
+        {c.etapa === "Candidatura enviada" && (zap
+          ? <a className="btn btn-p btn-sm" href={zap} target="_blank" rel="noopener noreferrer" onClick={() => mudar("Entrevista")}>Chamar para conversar no WhatsApp</a>
+          : <button className="btn btn-p btn-sm" onClick={() => mudar("Entrevista")}>Chamar para conversar</button>)}
+        {c.etapa === "Entrevista" && <button className="btn btn-p btn-sm" onClick={() => mudar("Proposta")}>Enviar proposta de contratação</button>}
+        {(c.etapa === "Entrevista" || c.etapa === "Proposta" || c.etapa === "Contratada") && zap && <a className="btn btn-s btn-sm" href={zap} target="_blank" rel="noopener noreferrer">WhatsApp</a>}
+        {c.etapa === "Proposta" && <button className="btn btn-g btn-sm" onClick={() => mudar("Entrevista")}>Cancelar proposta</button>}
+        {(c.etapa === "Candidatura enviada" || c.etapa === "Entrevista") && <button className="btn btn-g btn-sm" onClick={() => mudar("Recusada")}>Não seguir</button>}
+        {c.etapa === "Contratada" && (c.minha_avaliacao
+          ? <span className="small" style={{ alignSelf: "center" }}>Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(c.minha_avaliacao)}</span></span>
+          : <button className="btn btn-s btn-sm" onClick={avaliar}><span style={{ color: "#C98A00" }}>★</span> Avaliar {nome}</button>)}
+      </div>
+    </div>
+  );
+}
+
 function RecruiterAoVivo({ ctx }) {
   const token = CHAVES.get("empresa");
   const [dados, setDados] = useState(null);
   const [erro, setErro] = useState("");
-  const [tab, setTab] = useState("cands");
+  const tab = ctx.abaEmpresa || "cands", setTab = ctx.setAbaEmpresa || (() => {});
   const [vagaSel, setVagaSel] = useState("todas");
   const [aberto, setAberto] = useState(null);
   const [copiado, setCopiado] = useState(false);
@@ -4929,7 +5062,8 @@ function RecruiterAoVivo({ ctx }) {
   const mudar = async (c, etapa) => {
     try {
       await api("etapa", { token, id: c.id, etapa });
-      ctx.say(etapa === "Entrevista" ? "Marcado como chamado para conversar. A pessoa vê isso no Matchly." : etapa === "Contratada" ? "Marcado como contratado." : "Pronto. A pessoa vai saber que você seguiu com outro candidato.");
+      ctx.say({ Entrevista: "Pronto: em conversa. A pessoa recebe um aviso.", Proposta: "Proposta enviada! Avisamos quando a pessoa aceitar ou recusar.",
+        Recusada: "Pronto. A pessoa vai saber que você seguiu com outra pessoa." }[etapa] || "Atualizado.");
       carregar();
     } catch (e) { ctx.say(e.message); }
   };
@@ -4958,7 +5092,7 @@ function RecruiterAoVivo({ ctx }) {
       </div>
 
       <div className="row" style={{ margin: "20px 0 16px", gap: 4, borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["talentos", "Encontrar pessoas"], ["vagas", "Minhas vagas"], ["acesso", "Acesso"]].map(([k, l]) => (
+        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["talentos", "Encontrar pessoas"], ["vagas", "Minhas vagas"], ["conta", "Minha conta"]].map(([k, l]) => (
           <button key={k} className="btn btn-g btn-sm" onClick={() => setTab(k)}
             style={{ borderRadius: 0, borderBottom: "2px solid " + (tab === k ? "var(--wine)" : "transparent"), color: tab === k ? "var(--wine)" : "var(--ink-2)" }}>{l}</button>
         ))}
@@ -5004,16 +5138,7 @@ function RecruiterAoVivo({ ctx }) {
                     </div>
                     {c.mensagem && <div className="note" style={{ marginTop: 10 }}>“{c.mensagem}”</div>}
                     {(cv.habilidades || []).length > 0 && <div className="chips" style={{ marginTop: 10 }}>{cv.habilidades.slice(0, 8).map((x) => <span key={x} className="tag">{x}</span>)}</div>}
-                    <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                      <button className="btn btn-p btn-sm" onClick={() => abrir(c)}>Ver currículo</button>
-                      {zap && <a className="btn btn-s btn-sm" href={zap} target="_blank" rel="noopener noreferrer" onClick={() => { if (c.etapa === "Candidatura enviada") mudar(c, "Entrevista"); }}>Chamar no WhatsApp</a>}
-                      {!zap && <button className="btn btn-s btn-sm" onClick={() => mudar(c, "Entrevista")}>Chamar para conversar</button>}
-                      <button className="btn btn-s btn-sm" onClick={() => mudar(c, "Contratada")}>Contratei</button>
-                      <button className="btn btn-g btn-sm" onClick={() => mudar(c, "Recusada")}>Agora não</button>
-                      {c.etapa === "Contratada" && (c.minha_avaliacao
-                        ? <span className="small" style={{ alignSelf: "center" }}>Você avaliou: <span style={{ color: "#C98A00" }}>{"★".repeat(c.minha_avaliacao)}</span></span>
-                        : <button className="btn btn-s btn-sm" onClick={() => setAvaliando(c)}><span style={{ color: "#C98A00" }}>★</span> Avaliar {(c.candidatos?.nome || cv.nome || "").split(" ")[0]}</button>)}
-                    </div>
+                    <EtapasEmpresa c={c} nome={(c.candidatos?.nome || cv.nome || "").split(" ")[0]} zap={zap} abrir={() => abrir(c)} mudar={(e) => mudar(c, e)} avaliar={() => setAvaliando(c)} />
                   </div>
                 );
               })}
@@ -5047,8 +5172,15 @@ function RecruiterAoVivo({ ctx }) {
         )
       )}
 
-      {tab === "acesso" && (
+      {tab === "conta" && (
         <>
+        <div className="card between" style={{ maxWidth: 680, marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 600, color: "var(--ink)" }}>{e.nome}</div>
+            <div className="small">{dados.conta?.login ? <>Você entra com <b>{dados.conta.login.includes("@") ? dados.conta.login : mascaraTel(dados.conta.login)}</b> e a sua senha de 6 números.</> : "Crie uma senha abaixo para entrar de outros aparelhos."}</div>
+          </div>
+          <SairEmpresa sair={ctx.sairDaEmpresa} />
+        </div>
         <div className="card" style={{ maxWidth: 680, marginBottom: 16 }}>
           <h3>Entrar de outro aparelho</h3>
           <p style={{ marginTop: 8, marginBottom: 14 }}>No outro celular ou computador, toque em <b>Entrar</b>, escolha <b>Quem contrata</b> e use o WhatsApp (ou e-mail) e a senha de 6 números.</p>
