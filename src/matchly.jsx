@@ -480,7 +480,8 @@ function matchJob(job, profile, prefs) {
   const tetoEdu = gapEdu >= 2 ? 38 : gapEdu >= 0.8 ? 62 : 100;
 
   // 5. salário (convertido para valor mensal)
-  const sMin = +prefs.sMin || 0, sT = +prefs.sTarget || 0, sI = +prefs.sIdeal || 0;
+  const mult = UNIT_MULT[prefs.sUnit || "/mês"] || 1;
+  const sMin = (+prefs.sMin || 0) * mult, sT = (+prefs.sTarget || 0) * mult, sI = (+prefs.sIdeal || 0) * mult;
   const jobMax = monthlyOf(job, job.sMax);
   const salario = !sMin && !sT && !sI ? 80 : !job.sMax ? 70 : jobMax >= (sI || sT || sMin) ? 100 : jobMax >= (sT || sMin) ? 90 : jobMax >= sMin ? 75 : Math.max(20, Math.round((jobMax / Math.max(1, sMin)) * 55));
 
@@ -538,6 +539,8 @@ function matchJob(job, profile, prefs) {
 const money = (n) => "R$ " + Math.round(n).toLocaleString("pt-BR");
 const UNIT_MULT = { "/mês": 1, "/dia": 22, "/hora": 176 };
 const monthlyOf = (j, v) => v * (UNIT_MULT[j.unit || "/mês"] || 1);
+const UNID_NOME = { "/mês": "por mês", "/dia": "por dia", "/hora": "por hora" };
+const salarioTexto = (v, u) => `${money(+v)} ${UNID_NOME[u] || "por mês"}`;
 const payLabel = (j) => {
   if (!j.sMax && !j.sMin) return "Salário a combinar";
   const u = j.unit === "/dia" ? " por dia" : j.unit === "/hora" ? " por hora" : "/mês";
@@ -810,9 +813,11 @@ export default function App() {
   /* Modo ao vivo: troca os dados de demonstração pelas vagas coletadas e pelas empresas cadastradas */
   const [radarTotal, setRadarTotal] = useState(0);
   const [carregando, setCarregando] = useState(AO_VIVO);
+  const recarregar = useRef(() => Promise.resolve());
   useEffect(() => {
     if (!AO_VIVO) return;
-    (async () => {
+    let primeira = true;
+    const carregar = async () => {
       try {
         const out = await api("vagas");
         const rows = out.vagas || [];
@@ -836,15 +841,20 @@ export default function App() {
         const existe = new Set(vagas.map((v) => v.id));
         setApps((a) => a.filter((x) => x.remoteId || existe.has(x.jobId)));
         setSaved((sv) => Object.fromEntries(Object.entries(sv).filter(([k]) => existe.has(k))));
-        setCompare([]); setNotifs((n) => n.filter((x) => !/^n\d$/.test(x.id)));
-        if (tot) setRadarTotal(tot);
+        if (primeira) { setCompare([]); setNotifs((n) => n.filter((x) => !/^n\d$/.test(x.id))); }
+        setRadarTotal(tot);
         setJobsVersion((x) => x + 1);
       } catch (e) {
         console.error(e);
-        setToast("Não foi possível carregar as vagas agora. Tente de novo em alguns minutos.");
-      } finally { setCarregando(false); }
-    })();
-  }, [prefs.city, profile.city]);
+        if (primeira) setToast("Não foi possível carregar as vagas agora. Tente de novo em alguns minutos.");
+      } finally { setCarregando(false); primeira = false; }
+    };
+    recarregar.current = carregar;
+    carregar();
+    // vagas novas aparecem sozinhas, sem precisar recarregar a página
+    const t = setInterval(carregar, 60000);
+    return () => clearInterval(t);
+  }, []);
   // tocar num aviso com o app já aberto: /#area ou /#candidaturas
   useEffect(() => {
     const f = () => {
@@ -876,6 +886,7 @@ export default function App() {
             if (!c) return a;
             const vista = c.vista && !a.vista;
             const mudou = c.etapa !== a.stage && c.etapa !== "Candidatura enviada";
+            if (c.etapa === "Convite recusado") return { ...a, stage: "Convite recusado" };
             const avaliou = c.minha_avaliacao || a.avaliou || null;
             const nomes = { vagaNome: c.vaga || a.vagaNome, empresaNome: c.empresa || a.empresaNome };
             if (!vista && !mudou) return avaliou !== a.avaliou || nomes.vagaNome !== a.vagaNome ? { ...a, avaliou, ...nomes } : a;
@@ -887,7 +898,9 @@ export default function App() {
             return { ...a, stage: mudou ? c.etapa : a.stage, vista: c.vista, avaliou, ...nomes };
           });
           // aparelho novo: traz as candidaturas que só existem no servidor
-          candidaturas.filter((c) => !conhecidas.has(c.id)).forEach((c) => nova.push({
+          candidaturas.filter((c) => !conhecidas.has(c.id) && c.etapa === "Convite").forEach((c) =>
+            avisos.push([`${c.empresa || "Uma empresa"} convidou você`, `Para a vaga de ${c.vaga}. Veja em Candidaturas e responda.`, "star"]));
+          candidaturas.filter((c) => !conhecidas.has(c.id) && c.etapa !== "Convite recusado").forEach((c) => nova.push({
             id: "r" + c.id, remoteId: c.id, jobId: c.vaga_id, stage: c.etapa, vista: c.vista, avaliou: c.minha_avaliacao || null,
             date: new Date(c.criada_em).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }), notes: "", vagaNome: c.vaga, empresaNome: c.empresa }));
           if (avisos.length) {
@@ -906,9 +919,9 @@ export default function App() {
   // perfil guardado também no servidor: assim a pessoa entra de outro celular e encontra tudo
   useEffect(() => {
     if (!AO_VIVO || !logged || !CHAVES.get("candidato")) return;
-    const t = setTimeout(() => { api("salvar_perfil", { token: CHAVES.get("candidato"), perfil: { profile, prefs } }).catch(() => {}); }, 3000);
+    const t = setTimeout(() => { api("salvar_perfil", { token: CHAVES.get("candidato"), perfil: { profile, prefs, visivel: privacy.findable !== false } }).catch(() => {}); }, 3000);
     return () => clearTimeout(t);
-  }, [profile, prefs, logged]);
+  }, [profile, prefs, logged, privacy.findable]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2600); return () => clearTimeout(t); }, [toast]);
   const say = (m) => setToast(m);
 
@@ -938,6 +951,11 @@ export default function App() {
     setSaved((s) => { const n = { ...s }; if (n[id]) { delete n[id]; say("Vaga removida dos salvos"); } else { n[id] = "Sem pasta"; say("Vaga salva"); } return n; });
   };
   const apply = (jobId, extra = {}) => {
+    const convite = apps.find((a) => a.jobId === jobId && a.stage === "Convite");
+    if (convite) {
+      setApps((a) => a.map((x) => (x.id === convite.id ? { ...x, ...extra, stage: "Candidatura enviada", date: new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) } : x)));
+      return say("Pronto! Seu currículo foi enviado para quem convidou você.");
+    }
     if (apps.some((a) => a.jobId === jobId)) return say("Você já acompanha esta vaga");
     setApps((a) => [...a, { id: "a" + Date.now(), jobId, stage: "Candidatura enviada", date: new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }), notes: "", ...extra }]);
     say(extra.externo ? "Anotamos no seu painel. Termine a candidatura no site da empresa." : "Candidatura enviada. Acompanhe pelo painel de candidaturas.");
@@ -949,7 +967,7 @@ export default function App() {
   const setFolder = (id, f) => setSaved((s) => ({ ...s, [id]: f }));
 
   const ctx = { profile, setProfile, prefs, setPrefs, matches, saved, toggleSave, setFolder, apply, apps, setApps, go, say, setOpenJob, hidden, setHidden, feed, logged, autopilot, setAutopilot,
-    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1) };
+    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1), recarregarVagas: () => recarregar.current() };
 
   const navItems = [["dash", "Início"], ["feed", "Vagas"], ["search", "Buscar"], ["apps", "Candidaturas"], ["profile", "Meu perfil"], ["hub", "Mais"]];
   const unread = notifs.filter((n) => !n.read).length;
@@ -1361,8 +1379,9 @@ const novoTrabalho = () => ({ title: "", company: "", tempo: "", vinculo: "", at
 function QuickSignup({ ctx, inicial = [] }) {
   const [passo, setPasso] = useState(0);
   const [f, setF] = useState({ nome: "", tel: "", cidade: "", bairro: "", tipos: inicial, formato: "Tanto faz",
-    trabalhos: [novoTrabalho()], semExperiencia: false, horarios: [], inicio: "Imediatamente", estudo: "", cnh: "Não tenho", documentos: [], sobre: "" });
+    trabalhos: [novoTrabalho()], semExperiencia: false, horarios: [], inicio: "Imediatamente", estudo: "", cnh: "Não tenho", documentos: [], sobre: "", salario: "", salUnit: "", mostrarSal: true });
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const unidadeSal = f.salUnit || (f.formato === "Emprego fixo" ? "/mês" : "/dia");
   const setT = (i, k, v) => setF((x) => { const t = [...x.trabalhos]; t[i] = { ...t[i], [k]: v }; return { ...x, trabalhos: t }; });
   const [erro, setErro] = useState("");
   const [senha, setSenha] = useState("");
@@ -1407,9 +1426,11 @@ function QuickSignup({ ctx, inicial = [] }) {
       horarios: f.horarios, inicio: f.inicio,
       education: f.estudo ? [{ level: f.estudo, course: "", school: "", status: "Concluído", end: "" }] : [],
       role: escolhidos[0]?.role || experiences[0]?.title || "", cadastroRapido: true,
+      mostrarSalario: f.mostrarSal && +f.salario > 0,
     };
     const novasPrefs = { ...EMPTY_PREFS, mainRole: escolhidos[0]?.role || "", altRoles: escolhidos.slice(1).map((t) => t.role),
-      city: f.cidade.trim(), areas: escolhidos.map((t) => t.area), models: ["Presencial", "Híbrido"], contracts: contratos };
+      city: f.cidade.trim(), areas: escolhidos.map((t) => t.area), models: ["Presencial", "Híbrido"], contracts: contratos,
+      sTarget: +f.salario > 0 ? +f.salario : "", sUnit: unidadeSal };
     if (AO_VIVO) {
       setEnviando(true);
       try {
@@ -1551,6 +1572,24 @@ function QuickSignup({ ctx, inicial = [] }) {
 
       {passo === 3 && (
         <div className="col" style={{ gap: 26 }}>
+          <div>
+            <h3 style={{ marginBottom: 6, fontSize: 16 }}>Quanto você quer receber?</h3>
+            <p className="muted" style={{ marginBottom: 12 }}>Usamos para mostrar primeiro as vagas que pagam o que você pede. Se não souber, deixe em branco.</p>
+            <ChipGroup multi={false} options={["Por dia", "Por mês", "Por hora"]} value={{ "/dia": "Por dia", "/mês": "Por mês", "/hora": "Por hora" }[unidadeSal]}
+              onChange={(v) => set("salUnit", { "Por dia": "/dia", "Por mês": "/mês", "Por hora": "/hora" }[v])} />
+            <div className="row" style={{ gap: 10, marginTop: 12, alignItems: "center" }}>
+              <span style={{ fontWeight: 600 }}>R$</span>
+              <input id="q-salario" className="input" inputMode="numeric" style={{ maxWidth: 180, fontSize: 16 }} value={f.salario}
+                onChange={(e) => set("salario", e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder={unidadeSal === "/dia" ? "Ex.: 150" : unidadeSal === "/hora" ? "Ex.: 20" : "Ex.: 1800"} />
+              <span className="muted">{UNID_NOME[unidadeSal]}</span>
+            </div>
+            {+f.salario > 0 && (
+              <label className="row small" style={{ gap: 8, cursor: "pointer", marginTop: 12 }}>
+                <input id="q-mostrar-sal" type="checkbox" checked={f.mostrarSal} onChange={(e) => set("mostrarSal", e.target.checked)} style={{ accentColor: "var(--wine)", width: 17, height: 17 }} />
+                Mostrar esse valor no meu currículo para quem contrata
+              </label>
+            )}
+          </div>
           <div>
             <h3 style={{ marginBottom: 12, fontSize: 16 }}>Quando você pode trabalhar?</h3>
             <ChipGroup options={["Manhã", "Tarde", "Noite", "Fim de semana", "Qualquer horário"]} value={f.horarios} onChange={(v) => set("horarios", v)} />
@@ -1863,12 +1902,16 @@ function Signup({ ctx, onDone }) {
 
           <div className="card">
             <h3 style={{ marginBottom: 6 }}>Pretensão salarial</h3>
-            <p className="muted" style={{ marginBottom: 16 }}>Fica só para você. Serve para calcular a compatibilidade e nunca aparece para a empresa sem a sua autorização.</p>
+            <p className="muted" style={{ marginBottom: 16 }}>Serve para calcular a compatibilidade. Só aparece para a empresa se você marcar a opção abaixo.</p>
+            <Field label="Como você quer receber">
+          <ChipGroup multi={false} options={["Por dia", "Por mês", "Por hora"]} value={{ "/dia": "Por dia", "/mês": "Por mês", "/hora": "Por hora" }[pf.sUnit || "/mês"]}
+            onChange={(v) => setPref("sUnit", { "Por dia": "/dia", "Por mês": "/mês", "Por hora": "/hora" }[v])} />
+        </Field>
             <div className="grid2">
               <Field label="Mínimo que aceito" hint="Abaixo disso, não me mostre.">
                 <input className="input" type="number" value={pf.sMin} onChange={(e) => setPref("sMin", +e.target.value)} />
               </Field>
-              <Field label="Salário desejado" hint="O valor que você pede na entrevista.">
+              <Field label={`Quanto quero receber (${UNID_NOME[pf.sUnit || "/mês"]})`} hint="O valor que você pede na entrevista.">
                 <input className="input" type="number" value={pf.sTarget} onChange={(e) => setPref("sTarget", +e.target.value)} />
               </Field>
               <Field label="Salário ideal" hint="O que faria você trocar de emprego na hora.">
@@ -2033,11 +2076,32 @@ function JobCard({ job, ctx }) {
 
 /* --------------------------------- FEED --------------------------------- */
 const QUICK = ["Todas", "Diárias", "Emprego fixo", "Sem experiência", "Perto de mim", "Paga mais"];
+/* Filtro por porcentagem de combinação (usado pelo trabalhador e por quem contrata) */
+function FiltroPorcentagem({ valor, onChange, total, mostrando, nome }) {
+  return (
+    <div className="card" style={{ marginTop: 14, padding: "14px 16px" }}>
+      <div className="between" style={{ flexWrap: "wrap", gap: 8 }}>
+        <label htmlFor={`min-${nome}`} style={{ fontSize: 14, fontWeight: 600 }}>
+          {valor === 0 ? `Mostrando todas as ${nome}` : `Só ${nome} que combinam ${valor}% ou mais`}
+        </label>
+        <span className="muted">{mostrando} de {total}</span>
+      </div>
+      <input id={`min-${nome}`} type="range" min="0" max="95" step="5" value={valor} onChange={(e) => onChange(+e.target.value)}
+        style={{ accentColor: "var(--wine)", width: "100%", marginTop: 10 }} aria-label={`Porcentagem mínima de combinação para ${nome}`} />
+      <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+        {[0, 50, 70, 85].map((v) => <button key={v} className="chip" data-on={valor === v ? "1" : "0"} onClick={() => onChange(v)}>{v === 0 ? "Todas" : `${v}%+`}</button>)}
+      </div>
+    </div>
+  );
+}
+
 function Feed({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [quick, setQuick] = useState("Todas");
+  const [minimo, setMinimo] = useState(() => { try { return +sessionStorage.getItem("matchly:minimo") || 0; } catch (e) { return 0; } });
+  const mudarMinimo = (v) => { setMinimo(v); try { sessionStorage.setItem("matchly:minimo", String(v)); } catch (e) { /* segue */ } };
   useEffect(() => { const t = setTimeout(() => setLoading(false), 550); return () => clearTimeout(t); }, []);
-  let lista = ctx.feed;
+  let lista = ctx.feed.filter((j) => (ctx.matches[j.id]?.score ?? 0) >= minimo);
   if (quick === "Diárias") lista = lista.filter((j) => ehBico(j));
   if (quick === "Emprego fixo") lista = lista.filter((j) => !ehBico(j));
   if (quick === "Sem experiência") lista = lista.filter((j) => j.years === 0);
@@ -2048,11 +2112,12 @@ function Feed({ ctx }) {
     <div className="wrap" style={{ padding: "32px 24px 60px", maxWidth: 860 }}>
       <div className="between">
         <div><h2>Vagas para você</h2><p className="muted" style={{ marginTop: 4 }}>As que mais combinam com você aparecem primeiro.</p></div>
-        <button className="btn btn-s btn-sm" onClick={() => { setLoading(true); setTimeout(() => { setLoading(false); ctx.say("Feed atualizado"); }, 600); }}>Atualizar</button>
+        <button className="btn btn-s btn-sm" onClick={async () => { setLoading(true); if (AO_VIVO) await ctx.recarregarVagas?.(); setTimeout(() => { setLoading(false); ctx.say("Vagas atualizadas"); }, AO_VIVO ? 0 : 600); }}>Atualizar</button>
       </div>
       <div className="chips rolar" style={{ marginTop: 16 }}>
         {QUICK.map((q) => <button key={q} className="chip" data-on={quick === q ? "1" : "0"} onClick={() => setQuick(q)}>{q}</button>)}
       </div>
+      <FiltroPorcentagem valor={minimo} onChange={mudarMinimo} total={ctx.feed.length} mostrando={lista.length} nome="vagas" />
       <div className="row small" style={{ marginTop: 14, alignItems: "flex-start", gap: 8 }}>
         <span style={{ color: "var(--wine)", marginTop: 1 }}><Ic n="shield" s={16} /></span><span>Nenhuma vaga séria cobra dinheiro. Se pedirem taxa, curso ou depósito, denuncie.
         {" "}<a href="#" onClick={(e) => { e.preventDefault(); ctx.go("help"); }}>Ver o guia completo</a>.</span>
@@ -2071,8 +2136,8 @@ function Feed({ ctx }) {
           <p style={{ marginTop: 8 }}>O Matchly acabou de abrir e as empresas estão começando a entrar. Deixe seu cadastro pronto: quando aparecer uma vaga que combina com você, ela aparece aqui.</p>
           <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.go("cvedit")}>Completar meu currículo</button></div>
       ) : lista.length === 0 ? (
-        <div className="empty"><h3>Nenhuma vaga no feed</h3><p style={{ marginTop: 8 }}>Reabra as vagas ocultadas ou amplie suas preferências.</p>
-          <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => ctx.setHidden([])}>Restaurar ocultadas</button></div>
+        <div className="empty"><h3>Nenhuma vaga com esse filtro</h3><p style={{ marginTop: 8 }}>{minimo > 0 ? `Nenhuma vaga combina ${minimo}% ou mais com você agora. Baixe a porcentagem para ver mais.` : "Reabra as vagas ocultadas ou amplie suas preferências."}</p>
+          <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => { mudarMinimo(0); setQuick("Todas"); ctx.setHidden([]); }}>Mostrar todas</button></div>
       ) : (
         <div className="col" style={{ gap: 14 }}>{lista.map((j) => <JobCard key={j.id} job={j} ctx={ctx} />)}</div>
       )}
@@ -2156,8 +2221,9 @@ function JobPage({ id, ctx }) {
   const [tab, setTab] = useState("vaga");
   const [confirm, setConfirm] = useState(ctx.revisarVaga === id);
   useEffect(() => { if (ctx.revisarVaga === id) ctx.setRevisarVaga(null); }, []);
-  const applied = ctx.apps.some((a) => a.jobId === id);
-  const enviada = ctx.apps.find((a) => a.jobId === id);
+  // convite ainda sem resposta não conta como candidatura: o botão continua "Candidatar-me"
+  const applied = ctx.apps.some((a) => a.jobId === id && !String(a.stage).startsWith("Convite"));
+  const enviada = ctx.apps.find((a) => a.jobId === id && !String(a.stage).startsWith("Convite"));
 
   return (
     <div className="wrap" style={{ padding: "24px 24px 60px", maxWidth: 900 }}>
@@ -2365,7 +2431,7 @@ function RevisarCandidatura({ job, c, m, ctx, enviada, fechar }) {
               {(+ctx.prefs.sTarget > 0 || (p.referencias || []).some((r) => r.nome)) && (
                 <div style={{ marginTop: 20, display: "grid", gap: 4 }}>
                   <h3 style={{ fontSize: 15, marginBottom: 4 }}>O que enviar</h3>
-                  {+ctx.prefs.sTarget > 0 && <Switch on={salario} onChange={setSalario} label={`Mostrar meu salário desejado (${money(+ctx.prefs.sTarget)})`} />}
+                  {+ctx.prefs.sTarget > 0 && <Switch on={salario} onChange={setSalario} label={`Mostrar quanto quero receber (${salarioTexto(ctx.prefs.sTarget, ctx.prefs.sUnit)})`} />}
                   {(p.referencias || []).some((r) => r.nome) && <Switch on={refs} onChange={setRefs} label="Incluir minhas referências" />}
                 </div>
               )}
@@ -2483,9 +2549,39 @@ function Applications({ ctx }) {
     <div className="wrap" style={{ padding: "32px 24px 60px" }}>
       <div className="between"><div><h2>Minhas candidaturas</h2>
         <p className="muted" style={{ marginTop: 4 }}>Arraste os cards entre etapas — ou use as setas no celular.</p></div>
-        <span className="badge b-wine">{apps.length} em andamento</span></div>
+        <span className="badge b-wine">{apps.filter((a) => STAGES.includes(a.stage)).length} em andamento</span></div>
 
       <div style={{ marginTop: 16 }}><BotaoAvisos papel="candidato" ctx={ctx} texto="Receba um aviso no celular quando a empresa responder." /></div>
+      {apps.some((a) => a.stage === "Convite") && (
+        <div style={{ marginTop: 18 }}>
+          <h3 style={{ fontSize: 16, marginBottom: 10 }}>Convites para você</h3>
+          <div className="col" style={{ gap: 10 }}>
+            {apps.filter((a) => a.stage === "Convite").map((a) => {
+              const j = JOBS.find((x) => x.id === a.jobId);
+              return (
+                <div key={a.id} className="card" style={{ borderColor: "var(--wine)" }}>
+                  <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+                    <span style={{ color: "#C98A00", fontSize: 22 }}>★</span>
+                    <div className="grow" style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600 }}>{a.empresaNome || (j && companyOf(j.companyId)?.name) || "Uma empresa"} convidou você</div>
+                      <div className="muted">Para a vaga de {j ? j.title : a.vagaNome}{j ? ` · ${payLabel(j)} · ${j.city}` : ""}</div>
+                    </div>
+                  </div>
+                  <p className="small" style={{ marginTop: 10 }}>Quem contrata viu o seu perfil no Matchly e acha que você combina. Se quiser, envie o seu currículo: só então a empresa vê o seu WhatsApp.</p>
+                  <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
+                    {j ? <button className="btn btn-p btn-sm" onClick={() => { ctx.setOpenJob(j.id); ctx.setRevisarVaga?.(j.id); }}>Ver a vaga e responder</button>
+                      : <span className="small muted">Essa vaga já foi encerrada.</span>}
+                    <button className="btn btn-g btn-sm" onClick={async () => {
+                      try { await api("recusar_convite", { token: CHAVES.get("candidato"), id: a.remoteId }); } catch (e) { /* segue */ }
+                      setApps(apps.map((x) => (x.id === a.id ? { ...x, stage: "Convite recusado" } : x))); ctx.say("Tudo bem. A empresa vai saber que agora não.");
+                    }}>Agora não</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="kanban" style={{ marginTop: 22 }}>
         {STAGES.map((s) => (
           <div key={s} className="kcol" data-over={over === s ? "1" : "0"}
@@ -2558,7 +2654,7 @@ function Profile({ ctx }) {
         <div className="between card" style={{ marginTop: 18, background: "var(--surface-2)", flexWrap: "wrap", gap: 10 }}>
           <div>
             <div className="muted">Pretensão salarial</div>
-            <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>{+ctx.prefs.sTarget > 0 ? money(+ctx.prefs.sTarget) : "A combinar"}{+ctx.prefs.sMin > 0 && <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}> · aceito a partir de {money(+ctx.prefs.sMin)}</span>}</div>
+            <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>{+ctx.prefs.sTarget > 0 ? salarioTexto(ctx.prefs.sTarget, ctx.prefs.sUnit) : "A combinar"}{+ctx.prefs.sMin > 0 && <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}> · aceito a partir de {money(+ctx.prefs.sMin)}</span>}</div>
           </div>
           <div className="row"><button className="btn btn-s btn-sm" onClick={() => ctx.go("prefs")}>Alterar</button>
             <button className="btn btn-p btn-sm" onClick={() => ctx.go("cv")}>Ver meu currículo</button>
@@ -2675,14 +2771,22 @@ function Preferences({ ctx }) {
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h3 style={{ marginBottom: 14 }}>Salário</h3>
+        <h3 style={{ marginBottom: 14 }}>Quanto você quer receber</h3>
+        <Field label="Como você quer receber">
+          <ChipGroup multi={false} options={["Por dia", "Por mês", "Por hora"]} value={{ "/dia": "Por dia", "/mês": "Por mês", "/hora": "Por hora" }[f.sUnit || "/mês"]}
+            onChange={(v) => set("sUnit", { "Por dia": "/dia", "Por mês": "/mês", "Por hora": "/hora" }[v])} />
+        </Field>
         <div className="grid2">
-          <Field label="Mínimo aceitável"><input className="input" type="number" value={f.sMin} onChange={(e) => set("sMin", +e.target.value)} /></Field>
-          <Field label="Desejado"><input className="input" type="number" value={f.sTarget} onChange={(e) => set("sTarget", +e.target.value)} /></Field>
-          <Field label="Ideal"><input className="input" type="number" value={f.sIdeal} onChange={(e) => set("sIdeal", +e.target.value)} /></Field>
+          <Field label={`Mínimo que aceito (${UNID_NOME[f.sUnit || "/mês"]})`}><input className="input" type="number" value={f.sMin} onChange={(e) => set("sMin", +e.target.value)} /></Field>
+          <Field label={`Quanto quero receber (${UNID_NOME[f.sUnit || "/mês"]})`}><input id="p-salario" className="input" type="number" value={f.sTarget} onChange={(e) => set("sTarget", +e.target.value)} /></Field>
+          <Field label={`Ideal (${UNID_NOME[f.sUnit || "/mês"]})`}><input className="input" type="number" value={f.sIdeal} onChange={(e) => set("sIdeal", +e.target.value)} /></Field>
           <Field label="Moeda">
             <select className="select" value={f.currency} onChange={(e) => set("currency", e.target.value)}>{["BRL", "USD", "EUR"].map((x) => <option key={x}>{x}</option>)}</select></Field>
         </div>
+        <label className="row small" style={{ gap: 8, cursor: "pointer", marginBottom: 14 }}>
+          <input type="checkbox" checked={!!ctx.profile.mostrarSalario} onChange={(e) => ctx.setProfile({ ...ctx.profile, mostrarSalario: e.target.checked })} style={{ accentColor: "var(--wine)", width: 17, height: 17 }} />
+          Mostrar o valor que quero receber no meu currículo, para quem contrata
+        </label>
         <Field label="Benefícios importantes">
           <ChipGroup options={["Plano de saúde", "Vale refeição", "Auxílio home office", "PLR", "Previdência privada", "Horário flexível", "Auxílio educação", "Gympass"]} value={f.benefits} onChange={(v) => set("benefits", v)} /></Field>
       </div>
@@ -2842,7 +2946,7 @@ function cvFromProfile(p, prefs = {}) {
     inicio: p.inicio, horarios: p.horarios || [], mudanca: !!p.mudanca,
     modelos: prefs.models || [], contratos: prefs.contracts || [],
     documentos: p.documentos || [],
-    pretensao: p.mostrarSalario && prefs.sTarget ? +prefs.sTarget : null,
+    pretensao: p.mostrarSalario && prefs.sTarget ? +prefs.sTarget : null, pretensaoUnidade: prefs.sUnit || "/mês",
     anos: p.years || 0,
     experiencias: (p.experiences || []).map((e) => ({ cargo: e.title, empresa: e.company, cidade: e.cidade, inicio: e.start, fim: e.end,
       tempo: e.tempo, vinculo: e.vinculo, desc: e.results || e.raw, habilidades: e.skills || [] })),
@@ -2962,7 +3066,7 @@ function Curriculo({ cv, destaque = [], contatoOculto = false, onRevelar, mostra
               <CvLinha k="Formato" v={cv.modelos.join(", ")} />
               <CvLinha k="Contrato" v={cv.contratos.join(", ")} />
               <CvLinha k="Outra cidade" v={cv.mudanca ? "Aceita" : "Não"} />
-              <CvLinha k="Salário desejado" v={cv.pretensao ? money(cv.pretensao) : "A combinar"} />
+              <CvLinha k="Quer receber" v={cv.pretensao ? salarioTexto(cv.pretensao, cv.pretensaoUnidade) : "A combinar"} />
             </div>
           </CvSec>
 
@@ -4374,6 +4478,115 @@ function bip() {
   } catch (e) { /* sem som */ }
 }
 
+/* Todas as pessoas cadastradas, com filtro por porcentagem. O contato só aparece quando a pessoa aceita o convite. */
+const candDoPerfil = (p = {}) => {
+  const pr = p.profile || {}, pf = p.prefs || {};
+  return { fit: 0.5, role: pf.mainRole || pr.role || pr.experiences?.[0]?.title || "", city: pr.city || "", skills: pr.skills || [],
+    perfil: { experiences: pr.experiences || [], mudanca: !!pr.mudanca, years: +pr.years || 0 } };
+};
+function EncontrarPessoas({ ctx, token, vagas, aoConvidar }) {
+  const ativas = vagas.filter((v) => v.ativa && !v.suspeita);
+  const [pessoas, setPessoas] = useState(null);
+  const [erro, setErro] = useState("");
+  const [vagaId, setVagaId] = useState(ativas[0]?.id || "");
+  const [minimo, setMinimo] = useState(0);
+  const [busca, setBusca] = useState("");
+  const [vendo, setVendo] = useState(null);
+  const [limite, setLimite] = useState(30);
+  const carregar = () => api("talentos", { token }).then((r) => { setPessoas(r.pessoas); setErro(""); }).catch((e) => setErro(e.message));
+  useEffect(() => { carregar(); const t = setInterval(carregar, 60000); return () => clearInterval(t); }, []);
+  const vaga = ativas.find((v) => v.id === vagaId) || null;
+
+  if (erro && !pessoas) return <div className="empty"><h3>Não deu para carregar</h3><p style={{ marginTop: 8 }}>{erro}</p><button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={carregar}>Tentar de novo</button></div>;
+  if (!pessoas) return <div className="col" style={{ gap: 12 }}>{[1, 2, 3].map((i) => <div key={i} className="skel" style={{ height: 110 }} />)}</div>;
+
+  const todas = pessoas.map((p) => ({ ...p, cand: candDoPerfil(p.perfil) }))
+    .map((p) => ({ ...p, score: vaga ? scoreCandidate(p.cand, vaga) : null, ligacao: vaga ? p.ligacoes.find((l) => l.vaga_id === vaga.id) : null }));
+  const lista = todas
+    .filter((p) => p.score === null || p.score >= minimo)
+    .filter((p) => !busca.trim() || norm(`${p.nome} ${p.cand.role} ${p.cidade} ${p.perfil.profile?.bairro || ""} ${p.cand.skills.join(" ")}`).includes(norm(busca)))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || String(b.atualizado_em).localeCompare(String(a.atualizado_em)));
+
+  const convidar = async (p) => {
+    if (!vaga) return ctx.say("Escolha a vaga para o convite.");
+    try {
+      await api("convidar", { token, candidatoId: p.id, vagaId: vaga.id });
+      ctx.say(`Convite enviado para ${String(p.nome).split(" ")[0]}. Se aceitar, o currículo com o WhatsApp chega em Candidatos.`);
+      carregar(); aoConvidar?.();
+    } catch (e) { ctx.say(e.message); }
+  };
+  const rotulo = (l) => !l ? null : l.etapa === "Convite" ? "Convite enviado" : l.etapa === "Convite recusado" ? "Recusou o convite" : "Já se candidatou";
+
+  return (
+    <>
+      <p className="small" style={{ marginBottom: 12 }}>Aqui aparecem <b>todas as pessoas cadastradas</b> no Matchly, mesmo as que ainda não se candidataram. O WhatsApp só aparece quando a pessoa aceita o seu convite.</p>
+      <div className="card" style={{ marginBottom: 4 }}>
+        {ativas.length > 0 ? (
+          <Field label="Comparar com a vaga">
+            <select className="select" value={vagaId} onChange={(e) => setVagaId(e.target.value)}>
+              {ativas.map((v) => <option key={v.id} value={v.id}>{v.title} — {v.city}</option>)}
+            </select>
+          </Field>
+        ) : <div className="note small" style={{ marginBottom: 12 }}>Publique uma vaga para ver quanto cada pessoa combina e poder convidar. <a href="#" onClick={(e) => { e.preventDefault(); ctx.go("hire"); }}>Publicar vaga</a></div>}
+        <Field label="Buscar por nome, função, bairro ou habilidade">
+          <input className="input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Ex.: diarista, Itaquera, cozinha" />
+        </Field>
+      </div>
+      {vaga && <FiltroPorcentagem valor={minimo} onChange={setMinimo} total={todas.length} mostrando={lista.length} nome="pessoas" />}
+      <div className="col" style={{ gap: 12, marginTop: 14 }}>
+        {pessoas.length === 0 && <div className="empty"><h3>Ainda não há pessoas cadastradas</h3><p style={{ marginTop: 8 }}>Assim que alguém fizer o cadastro no Matchly, aparece aqui.</p></div>}
+        {pessoas.length > 0 && lista.length === 0 && <div className="empty"><h3>Ninguém com esse filtro</h3><p style={{ marginTop: 8 }}>Baixe a porcentagem ou limpe a busca para ver mais pessoas.</p>
+          <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => { setMinimo(0); setBusca(""); }}>Mostrar todas</button></div>}
+        {lista.slice(0, limite).map((p) => {
+          const pr = p.perfil.profile || {};
+          const idade = idadeDe(pr.nascimento);
+          return (
+            <div className="card card-h" key={p.id}>
+              <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
+                <div className="row">
+                  <div style={{ width: 40, height: 40, borderRadius: 99, background: "var(--wine-tint)", color: "var(--wine)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 13 }}>{initials(p.nome)}</div>
+                  <div><h3 style={{ fontSize: 15 }}>{p.nome}</h3>
+                    <div className="muted">{[p.cand.role, idade ? `${idade} anos` : "", pr.bairro ? `${pr.bairro}, ${p.cidade || pr.city || ""}` : p.cidade || pr.city].filter(Boolean).join(" · ")}</div>
+                    <div className="muted" style={{ marginTop: 2 }}>{p.cand.perfil.years ? `${String(p.cand.perfil.years).replace(".", ",")} ano(s) de experiência` : "Procurando o primeiro emprego"}{pr.inicio ? ` · começa ${String(pr.inicio).toLowerCase()}` : ""}</div>
+                    {pr.mostrarSalario && +p.perfil.prefs?.sTarget > 0 && <div className="small" style={{ marginTop: 2, color: "var(--ink)" }}><Ic n="money" s={14} /> Quer receber {salarioTexto(p.perfil.prefs.sTarget, p.perfil.prefs.sUnit)}</div>}
+                    {p.nota && <div className="row small" style={{ marginTop: 4, gap: 6 }}><Estrelas r={p.nota} pequeno /> <span className="muted">de quem já contratou</span></div>}</div>
+                </div>
+                <div className="row" style={{ flexWrap: "wrap" }}>
+                  {p.score !== null && <span className="score">Combina {p.score}%</span>}
+                  {rotulo(p.ligacao) && <span className="badge b-green">{rotulo(p.ligacao)}</span>}
+                </div>
+              </div>
+              {p.cand.skills.length > 0 && <div className="chips" style={{ marginTop: 10 }}>{p.cand.skills.slice(0, 8).map((x) => <span key={x} className="tag">{x}</span>)}</div>}
+              <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+                <button className="btn btn-s btn-sm" onClick={() => setVendo(p)}>Ver currículo</button>
+                {vaga && !p.ligacao && <button className="btn btn-p btn-sm" onClick={() => convidar(p)}>Convidar para a vaga</button>}
+              </div>
+            </div>
+          );
+        })}
+        {lista.length > limite && <button className="btn btn-s" onClick={() => setLimite(limite + 30)}>Mostrar mais ({lista.length - limite})</button>}
+      </div>
+      {vendo && (
+        <div className="sheet" onClick={() => setVendo(null)} style={{ alignItems: "flex-start", overflowY: "auto" }}>
+          <div style={{ maxWidth: 900, width: "100%", margin: "20px 0" }} onClick={(e) => e.stopPropagation()}>
+            <div className="card between" style={{ marginBottom: 12, flexWrap: "wrap", gap: 10, position: "sticky", top: 0, zIndex: 2 }}>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                {vendo.score !== null && <span className="badge b-wine">Combina {vendo.score}%</span>}
+                <span className="small">O WhatsApp aparece quando a pessoa aceitar o convite.</span>
+              </div>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                {vaga && !vendo.ligacao && <button className="btn btn-p btn-sm" onClick={() => { convidar(vendo); setVendo(null); }}>Convidar para a vaga</button>}
+                <button className="btn btn-g btn-sm" onClick={() => setVendo(null)} aria-label="Fechar">Fechar ×</button>
+              </div>
+            </div>
+            <Curriculo cv={cvFromProfile(vendo.perfil.profile || {}, vendo.perfil.prefs || {})} destaque={vaga?.skills || []} mostrarRefs={false} />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function RecruiterAoVivo({ ctx }) {
   const token = CHAVES.get("empresa");
   const [dados, setDados] = useState(null);
@@ -4409,7 +4622,9 @@ function RecruiterAoVivo({ ctx }) {
     return () => clearInterval(t);
   }, [token]);
 
-  const novas = dados ? dados.candidaturas.filter((c) => !c.vista).length : 0;
+  const ehConvite = (c) => String(c.etapa).startsWith("Convite");
+  const reais = dados ? dados.candidaturas.filter((c) => !ehConvite(c)) : [];
+  const novas = reais.filter((c) => !c.vista).length;
   useEffect(() => {
     const antes = document.title;
     document.title = novas ? `(${novas}) Matchly` : "Matchly — encontre seu trabalho ideal";
@@ -4442,7 +4657,7 @@ function RecruiterAoVivo({ ctx }) {
 
   const vagas = dados.vagas.map(vagaDoBanco);
   const porVaga = Object.fromEntries(vagas.map((v) => [v.id, v]));
-  const cands = dados.candidaturas.filter((c) => vagaSel === "todas" || c.vaga_id === vagaSel)
+  const cands = reais.filter((c) => vagaSel === "todas" || c.vaga_id === vagaSel)
     .map((c) => ({ ...c, vaga: porVaga[c.vaga_id], score: porVaga[c.vaga_id] ? scoreCandidate(candDoCv(c.curriculo), porVaga[c.vaga_id]) : null }));
   const mudar = async (c, etapa) => {
     try {
@@ -4469,14 +4684,14 @@ function RecruiterAoVivo({ ctx }) {
       </div>
 
       <div className="grid-cards" style={{ marginTop: 20 }}>
-        {[["Vagas no ar", vagas.filter((v) => v.ativa && !v.suspeita).length], ["Candidaturas", dados.candidaturas.length],
-          ["Ainda não vistas", novas], ["Chamados para conversar", dados.candidaturas.filter((c) => c.etapa === "Entrevista").length]].map(([l, v]) => (
+        {[["Vagas no ar", vagas.filter((v) => v.ativa && !v.suspeita).length], ["Candidaturas", reais.length],
+          ["Ainda não vistas", novas], ["Convites enviados", dados.candidaturas.filter((c) => c.etapa === "Convite").length]].map(([l, v]) => (
           <div className="card" key={l}><div style={{ fontSize: 26, fontWeight: 700 }}>{v}</div><div className="muted">{l}</div></div>
         ))}
       </div>
 
       <div className="row" style={{ margin: "20px 0 16px", gap: 4, borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["vagas", "Minhas vagas"], ["acesso", "Acesso"]].map(([k, l]) => (
+        {[["cands", `Candidatos${novas ? ` (${novas} ${novas === 1 ? "nova" : "novas"})` : ""}`], ["talentos", "Encontrar pessoas"], ["vagas", "Minhas vagas"], ["acesso", "Acesso"]].map(([k, l]) => (
           <button key={k} className="btn btn-g btn-sm" onClick={() => setTab(k)}
             style={{ borderRadius: 0, borderBottom: "2px solid " + (tab === k ? "var(--wine)" : "transparent"), color: tab === k ? "var(--wine)" : "var(--ink-2)" }}>{l}</button>
         ))}
@@ -4493,7 +4708,8 @@ function RecruiterAoVivo({ ctx }) {
           )}
           {cands.length === 0 ? (
             <div className="empty"><h3>Nenhuma candidatura ainda</h3>
-              <p style={{ marginTop: 8 }}>Assim que alguém enviar o currículo, ele aparece aqui na hora, com um aviso sonoro. Pode deixar esta página aberta.</p>
+              <p style={{ marginTop: 8 }}>Assim que alguém enviar o currículo, ele aparece aqui na hora, com um aviso sonoro. Enquanto isso, procure pessoas cadastradas e convide quem combina.</p>
+              <button className="btn btn-p btn-sm" style={{ marginTop: 14 }} onClick={() => setTab("talentos")}>Encontrar pessoas</button>
               {window.Notification && window.Notification.permission === "default" && (
                 <button className="btn btn-s btn-sm" style={{ marginTop: 14 }} onClick={() => window.Notification.requestPermission().then(() => ctx.say("Pronto. Avisamos mesmo com a aba minimizada."))}>Avisar também quando a aba estiver minimizada</button>
               )}</div>
@@ -4509,6 +4725,7 @@ function RecruiterAoVivo({ ctx }) {
                         <div style={{ width: 40, height: 40, borderRadius: 99, background: "var(--wine-tint)", color: "var(--wine)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 13 }}>{initials(c.candidatos?.nome || cv.nome)}</div>
                         <div><h3 style={{ fontSize: 15 }}>{c.candidatos?.nome || cv.nome}</h3>
                           <div className="muted">{[cv.objetivo, cv.idade ? `${cv.idade} anos` : "", cv.bairro || cv.cidade].filter(Boolean).join(" · ")}</div>
+                          {cv.pretensao > 0 && <div className="small" style={{ marginTop: 2, color: "var(--ink)" }}><Ic n="money" s={14} /> Quer receber {salarioTexto(cv.pretensao, cv.pretensaoUnidade)}</div>}
                           <div className="muted" style={{ marginTop: 2 }}>Para {c.vaga?.title || "vaga encerrada"} · {quandoFoi(c.criada_em)}</div>
                           {c.nota_candidato && <div className="row small" style={{ marginTop: 4, gap: 6 }}><Estrelas r={c.nota_candidato} pequeno /> <span className="muted">de quem já contratou</span></div>}</div>
                       </div>
@@ -4538,6 +4755,8 @@ function RecruiterAoVivo({ ctx }) {
         </>
       )}
 
+      {tab === "talentos" && <EncontrarPessoas ctx={ctx} token={token} vagas={vagas} aoConvidar={carregar} />}
+
       {tab === "vagas" && (
         vagas.length === 0 ? (
           <div className="empty"><h3>Nenhuma vaga publicada</h3>
@@ -4548,7 +4767,7 @@ function RecruiterAoVivo({ ctx }) {
               <div key={v.id} className="between" style={{ padding: 16, flexWrap: "wrap", gap: 10 }}>
                 <div>
                   <h3 style={{ fontSize: 15 }}>{v.title}</h3>
-                  <div className="muted">{v.city} · {v.contract} · {payLabel(v)} · {dados.candidaturas.filter((c) => c.vaga_id === v.id).length} candidatura(s)</div>
+                  <div className="muted">{v.city} · {v.contract} · {payLabel(v)} · {reais.filter((c) => c.vaga_id === v.id).length} candidatura(s)</div>
                 </div>
                 <div className="row">
                   {v.suspeita ? <span className="badge">Em revisão</span> : v.ativa ? <span className="badge b-green">No ar</span> : <span className="badge">Encerrada</span>}
@@ -5034,7 +5253,7 @@ function Assistant({ ctx }) {
       const min = Math.min(...mesmas.map((j) => j.sMin || j.sMax)), max = Math.max(...mesmas.map((j) => j.sMax));
       const nome = unidade === "/dia" ? "por dia" : unidade === "/hora" ? "por hora" : "por mês";
       const meio = Math.round(((min + max) / 2) / (unidade === "/mês" ? 50 : 5)) * (unidade === "/mês" ? 50 : 5);
-      const pedido = +prefs.sTarget > 0 && unidade === "/mês" ? +prefs.sTarget : meio;
+      const pedido = +prefs.sTarget > 0 && (prefs.sUnit || "/mês") === unidade ? +prefs.sTarget : meio;
       return `As vagas que mais combinam com você pagam de ${money(min)} a ${money(max)} ${nome}. Se perguntarem quanto você quer, peça por volta de ${money(pedido)} ${nome}, que fica no meio da faixa. Se a vaga já diz o valor, não precisa negociar na primeira conversa.`;
     }
     if (s.includes("qualificad") || s.includes("consigo"))

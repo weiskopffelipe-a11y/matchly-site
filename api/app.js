@@ -8,6 +8,8 @@
 //        ?acao=entrar | definir_senha                                (celular + senha de 6 números)
 //        ?acao=avaliar                                               (estrelas depois da contratação)
 //        ?acao=inscrever                                             (avisos no celular)
+//        ?acao=talentos | convidar                                   (quem contrata procura pessoas cadastradas)
+//        ?acao=recusar_convite                                       (quem procura trabalho)
 //
 // Acesso: cada aparelho recebe uma chave aleatória (no banco fica só o hash).
 // Para entrar em outro aparelho: celular (ou e-mail) + senha de 6 números.
@@ -49,7 +51,7 @@ const PEDE_DINHEIRO = /(pagar|pague|pagamento|taxa|dep[oó]sito|pix|boleto|inves
 // limite simples contra abuso (por instância): N chamadas por IP e por ação a cada hora
 const usos = new Map();
 const LIMITES = { publicar: 20, candidatar: 40, cadastro: 10, entrar: 30, definir_senha: 20, avaliar: 60, inscrever: 30,
-  etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400, salvar_perfil: 300 };
+  etapa: 600, vista: 600, encerrar: 60, painel: 2000, minhas: 400, salvar_perfil: 300, talentos: 600, convidar: 200, recusar_convite: 100 };
 function excedeu(req, acao) {
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "?";
   const k = `${acao}:${ip}`;
@@ -257,6 +259,46 @@ export default async function handler(req, res) {
       return sai(res, 201, { token, empresa: { id: empresa.id, nome: empresa.nome }, vaga, revisao: suspeita });
     }
 
+    // ---------------------------------------------------------------- banco de talentos
+    if (acao === "talentos" || acao === "convidar") {
+      const empresa = await empresaDoToken(d.token);
+      if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Entre com seu WhatsApp e senha." });
+      const minhasVagas = await db(`vagas?select=id,titulo,ativa&empresa_id=eq.${empresa.id}`);
+      const ids = minhasVagas.map((v) => v.id);
+
+      if (acao === "talentos") {
+        const linhas = await db("candidatos?select=id,nome,cidade,perfil,atualizado_em&order=atualizado_em.desc&limit=400");
+        const visiveis = linhas.filter((c) => c.perfil?.profile && c.perfil.visivel !== false);
+        const cids = visiveis.map((c) => c.id);
+        const notas = cids.length ? await db(`avaliacoes?select=candidato_id,nota&de=eq.empresa&candidato_id=in.(${cids.join(",")})&limit=20000`) : [];
+        const ligacoes = ids.length && cids.length ? await db(`candidaturas?select=candidato_id,vaga_id,etapa&vaga_id=in.(${ids.join(",")})&limit=5000`) : [];
+        const porNota = agrupar(notas, "candidato_id");
+        // o contato só aparece quando a pessoa se candidata ou aceita o convite
+        const semContato = (p) => {
+          const { phone, email, ...resto } = p.profile || {};
+          return { profile: { ...resto, referencias: (resto.referencias || []).map((r) => ({ nome: r.nome, relacao: r.relacao })) }, prefs: p.prefs || {} };
+        };
+        return sai(res, 200, { pessoas: visiveis.map((c) => ({
+          id: c.id, nome: c.nome, cidade: c.cidade, atualizado_em: c.atualizado_em, perfil: semContato(c.perfil),
+          nota: porNota[c.id] || null, ligacoes: ligacoes.filter((l) => l.candidato_id === c.id).map((l) => ({ vaga_id: l.vaga_id, etapa: l.etapa })),
+        })) });
+      }
+
+      if (!uuid(d.candidatoId) || !ids.includes(d.vagaId)) return sai(res, 400, { erro: "Escolha uma das suas vagas." });
+      const vaga = minhasVagas.find((v) => v.id === d.vagaId);
+      if (!vaga.ativa) return sai(res, 400, { erro: "Essa vaga já foi encerrada." });
+      const [cand] = await db(`candidatos?select=id,nome&id=eq.${d.candidatoId}&limit=1`);
+      if (!cand) return sai(res, 404, { erro: "Pessoa não encontrada." });
+      try {
+        await db("candidaturas", { method: "POST", prefer: "return=minimal", body: { candidato_id: cand.id, vaga_id: vaga.id, etapa: "Convite", curriculo: {}, vista: true } });
+      } catch (e) {
+        if (e.status === 409) return sai(res, 409, { erro: "Essa pessoa já foi convidada ou já se candidatou a essa vaga." });
+        throw e;
+      }
+      await avisar("candidato", cand.id, { title: `${empresa.nome} convidou você`, body: `Para a vaga de ${vaga.titulo}. Toque para ver e responder.`, url: "/#candidaturas" });
+      return sai(res, 201, { ok: true });
+    }
+
     if (["painel", "etapa", "vista", "encerrar"].includes(acao)) {
       const empresa = await empresaDoToken(d.token);
       if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Entre com seu WhatsApp e senha." });
@@ -361,9 +403,17 @@ export default async function handler(req, res) {
         token = await criarAcesso("candidato", candidato.id);
       }
       try {
-        const [cand] = await db("candidaturas", { method: "POST", prefer: "return=representation", body: {
-          candidato_id: candidato.id, vaga_id: vaga.id, curriculo, mensagem: limpa(d.mensagem, 600) || null,
-        } });
+        // se a empresa tinha convidado, a candidatura é o "sim" ao convite
+        const [convite] = await db(`candidaturas?select=id,etapa&candidato_id=eq.${candidato.id}&vaga_id=eq.${vaga.id}&limit=1`);
+        let cand;
+        if (convite && ["Convite", "Convite recusado"].includes(convite.etapa)) {
+          [cand] = await db(`candidaturas?id=eq.${convite.id}`, { method: "PATCH", prefer: "return=representation", body: {
+            curriculo, mensagem: limpa(d.mensagem, 600) || null, etapa: "Candidatura enviada", vista: false, criada_em: new Date().toISOString(), atualizada_em: new Date().toISOString() } });
+        } else {
+          [cand] = await db("candidaturas", { method: "POST", prefer: "return=representation", body: {
+            candidato_id: candidato.id, vaga_id: vaga.id, curriculo, mensagem: limpa(d.mensagem, 600) || null,
+          } });
+        }
         const primeiro = nome.split(" ")[0];
         await avisar("empresa", vaga.empresa_id, { title: `Nova candidatura: ${primeiro}`, body: `Para a vaga de ${vaga.titulo}. Toque para ver o currículo.`, url: "/#area" });
         await email(vaga.empresas?.email_contato, `Nova candidatura para ${vaga.titulo}`,
@@ -373,6 +423,13 @@ export default async function handler(req, res) {
         if (e.status === 409) return sai(res, 409, { token, erro: "Você já se candidatou a esta vaga." });
         throw e;
       }
+    }
+
+    if (acao === "recusar_convite") {
+      const candidato = await candidatoDoToken(d.token);
+      if (!candidato || !uuid(d.id)) return sai(res, 401, { erro: "Acesso não encontrado." });
+      await db(`candidaturas?id=eq.${d.id}&candidato_id=eq.${candidato.id}&etapa=eq.Convite`, { method: "PATCH", body: { etapa: "Convite recusado", atualizada_em: new Date().toISOString() } });
+      return sai(res, 200, { ok: true });
     }
 
     if (acao === "minhas") {
