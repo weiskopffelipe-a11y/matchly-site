@@ -16,6 +16,7 @@
 // =====================================================================
 import crypto from "node:crypto";
 import { gerarChaves, enviarPush } from "../lib/push.js";
+import { canais, enviarEmail, enviarSMS, modeloEmail } from "../lib/avisos.js";
 
 const SUPA = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
 const CHAVE = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "";
@@ -113,11 +114,52 @@ async function avisar(tipo, donoId, dados) {
     }));
   } catch (e) { console.error("aviso", e.message); }
 }
-// e-mail opcional (só funciona se RESEND_API_KEY e EMAIL_REMETENTE estiverem configurados na Vercel)
-async function email(para, assunto, html) {
-  if (!para || !process.env.RESEND_API_KEY || !process.env.EMAIL_REMETENTE) return;
-  await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: process.env.EMAIL_REMETENTE, to: para, subject: assunto, html }) }).catch(() => {});
+// avisos para quem procura trabalho: celular (push), e-mail e SMS, conforme o que a pessoa escolheu em "Avisos"
+//   tipo: "candidatura" (candidatura enviada) | "respostas" (empresa viu, chamou, contratou, recusou, convidou) | "novasVagas"
+async function avisarCandidato(id, tipo, { titulo, texto, url = "/#candidaturas", botao = "Abrir o Matchly", sms }) {
+  try {
+    const [c] = await db(`candidatos?select=telefone,perfil&id=eq.${id}&limit=1`);
+    const al = c?.perfil?.alertas || {};
+    if (al[tipo] === false) return;
+    await avisar("candidato", id, { title: titulo, body: texto, url });
+    const email = al.email || c?.perfil?.profile?.email;
+    if (email && al.porEmail !== false) await enviarEmail(email, titulo, modeloEmail({ titulo, texto: texto.replace(/\n/g, "<br>"), botao, link: SITE + url, site: SITE }));
+    if (al.porSMS && (c?.telefone || c?.perfil?.profile?.phone)) await enviarSMS(c.telefone || c.perfil.profile.phone, sms || `Matchly: ${titulo}${/[.!?]$/.test(titulo) ? "" : "."} ${texto}`.slice(0, 300));
+  } catch (e) { console.error("avisarCandidato", e.message); }
+}
+async function avisarEmpresaPorEmail(empresaId, titulo, texto) {
+  try {
+    const [e] = await db(`empresas?select=email_contato&id=eq.${empresaId}&limit=1`);
+    if (e?.email_contato) await enviarEmail(e.email_contato, titulo, modeloEmail({ titulo, texto, botao: "Ver na minha área", link: SITE + "/#area", site: SITE }));
+  } catch { /* segue */ }
+}
+
+// combinação simples usada nos avisos de vagas novas: mesma cidade (ou remoto) e mesma área ou função
+const semAcento = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const palavras = (s) => semAcento(s).split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+function combinaVaga(perfil = {}, v) {
+  const pf = perfil.prefs || {}, pr = perfil.profile || {};
+  const cidadeC = semAcento(pf.city || pr.city).trim(), cidadeV = semAcento(v.cidade).trim();
+  if (v.modelo !== "Remoto" && cidadeC && cidadeV && cidadeC !== cidadeV) return false;
+  if ((pf.areas || []).includes(v.area)) return true;
+  const alvo = new Set([pf.mainRole, ...(pf.altRoles || []), pr.role, ...(pr.experiences || []).map((e) => e.title)].flatMap(palavras));
+  return palavras(v.titulo).some((w) => alvo.has(w));
+}
+const pagaTexto = (v) => { const u = { "/dia": " por dia", "/hora": " por hora" }[v.unidade] || " por mês"; const x = +v.salario_max || +v.salario_min; return x ? `R$ ${Math.round(x).toLocaleString("pt-BR")}${u}` : "valor a combinar"; };
+
+// vaga nova: aviso no celular, na hora, para quem tem perfil parecido
+async function avisarNovaVaga(vaga, empresaNome) {
+  try {
+    const subs = await db("push_inscricoes?select=dono_id&dono_tipo=eq.candidato&limit=3000");
+    const ids = [...new Set(subs.map((x) => x.dono_id))].slice(0, 250);
+    if (!ids.length) return;
+    const cands = await db(`candidatos?select=id,perfil&id=in.(${ids.join(",")})`);
+    const alvo = cands.filter((c) => c.perfil?.alertas?.novasVagas !== false && combinaVaga(c.perfil, vaga)).slice(0, 150);
+    await Promise.race([
+      Promise.all(alvo.map((c) => avisar("candidato", c.id, { title: "Vaga nova que combina com você", body: `${vaga.titulo} · ${empresaNome} · ${pagaTexto(vaga)}`, url: "/" }))),
+      new Promise((r) => setTimeout(r, 6000)),
+    ]);
+  } catch (e) { console.error("avisarNovaVaga", e.message); }
 }
 
 // ------------------------------------------------------------------ avaliações
@@ -141,11 +183,11 @@ export default async function handler(req, res) {
     // ================================================================ leitura pública
     if (acao === "status") {
       const ok = await db("avaliacoes?select=id&limit=1").then(() => true).catch(() => false);
-      return sai(res, 200, { banco: true, tabelas: ok });
+      return sai(res, 200, { banco: true, tabelas: ok, canais: { celular: true, ...canais() } });
     }
 
     if (acao === "vagas") {
-      const rows = await db("vagas?select=id,empresa_id,origem,titulo,descricao,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,escolaridade,exige_experiencia,area,habilidades,beneficios,url,fonte_nome,publicada_em,coletada_em,particular," +
+      const rows = await db("vagas?select=id,empresa_id,origem,titulo,descricao,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,escolaridade,exige_experiencia,area,habilidades,beneficios,url,fonte_nome,publicada_em,coletada_em,particular,horarios," +
         "empresas(id,nome,dominio,site,logo_url,setor,cidade,uf,tamanho,descricao,beneficios,verificada,tipo)" +
         "&ativa=eq.true&suspeita=eq.false&order=publicada_em.desc.nullslast&limit=1500");
       const ids = [...new Set(rows.map((v) => v.empresa_id).filter(Boolean))];
@@ -166,6 +208,38 @@ export default async function handler(req, res) {
     if (acao === "push_chave") {
       res.setHeader("Cache-Control", "s-maxage=3600");
       return sai(res, 200, { chave: (await chavesPush()).publica });
+    }
+
+    if (acao === "resumo_diario") {
+      const segredo = process.env.CRON_SECRET;
+      const autorizado = segredo ? req.headers.authorization === `Bearer ${segredo}` : /vercel-cron/i.test(req.headers["user-agent"] || "");
+      if (!autorizado) return sai(res, 401, { erro: "Só o agendador da Vercel pode chamar." });
+      const ligados = canais();
+      if (!ligados.email && !ligados.sms) return sai(res, 200, { ok: true, enviados: 0, motivo: "e-mail e SMS ainda não configurados" });
+      const desde = new Date(Date.now() - 26 * 3600e3).toISOString();
+      const vagas = await db(`vagas?select=id,titulo,cidade,modelo,area,salario_min,salario_max,unidade,empresas(nome)&ativa=eq.true&suspeita=eq.false&publicada_em=gte.${desde}&order=publicada_em.desc&limit=300`);
+      if (!vagas.length) return sai(res, 200, { ok: true, enviados: 0, motivo: "nenhuma vaga nova" });
+      const limite = Date.now() - 20 * 3600e3, comeco = Date.now();
+      const cands = await db("candidatos?select=id,telefone,perfil,ultimo_resumo&order=atualizado_em.desc&limit=2000");
+      let enviados = 0;
+      for (const c of cands) {
+        if (Date.now() - comeco > 45_000 || enviados >= 300) break;
+        const al = c.perfil?.alertas || {};
+        if (al.novasVagas === false || (c.ultimo_resumo && new Date(c.ultimo_resumo).getTime() > limite)) continue;
+        const email = al.email || c.perfil?.profile?.email;
+        const querEmail = ligados.email && email && al.porEmail !== false, querSMS = ligados.sms && al.porSMS && c.telefone;
+        if (!querEmail && !querSMS) continue;
+        const ja = new Set((await db(`candidaturas?select=vaga_id&candidato_id=eq.${c.id}&limit=500`)).map((x) => x.vaga_id));
+        const lista = vagas.filter((v) => !ja.has(v.id) && combinaVaga(c.perfil, v)).slice(0, 5);
+        if (!lista.length) continue;
+        const titulo = lista.length === 1 ? "1 vaga nova que combina com você" : `${lista.length} vagas novas que combinam com você`;
+        if (querEmail) await enviarEmail(email, titulo, modeloEmail({ titulo, site: SITE, botao: "Ver as vagas", link: SITE + "/",
+          texto: lista.map((v) => `• <b>${v.titulo}</b> — ${v.empresas?.nome || ""}, ${v.cidade || ""} · ${pagaTexto(v)}`).join("<br>") }));
+        if (querSMS) await enviarSMS(c.telefone, `Matchly: ${titulo}. Ex.: ${lista[0].titulo} (${pagaTexto(lista[0])}). Veja em ${SITE.replace(/^https?:\/\//, "")}`);
+        await db(`candidatos?id=eq.${c.id}`, { method: "PATCH", body: { ultimo_resumo: new Date().toISOString() } });
+        enviados++;
+      }
+      return sai(res, 200, { ok: true, enviados, vagas: vagas.length });
     }
 
     if (req.method !== "POST") return sai(res, 405, { erro: "Use POST." });
@@ -253,9 +327,10 @@ export default async function handler(req, res) {
         unidade: UNIDADES.includes(v.unidade) ? v.unidade : "/mês",
         escolaridade: limpa(v.escolaridade, 40) || null, exige_experiencia: !!v.exige_experiencia,
         area: limpa(v.area, 60) || null, habilidades: lista(v.habilidades), beneficios: lista(v.beneficios, 15, 40),
-        particular: empresa.tipo === "pessoa", publicada_em: new Date().toISOString(), ativa: true,
+        horarios: lista(v.horarios, 8, 30), particular: empresa.tipo === "pessoa", publicada_em: new Date().toISOString(), ativa: true,
         suspeita, motivos_suspeita: suspeita ? ["Pede pagamento do candidato"] : [],
       } });
+      if (!suspeita) await avisarNovaVaga(vaga, empresa.nome);
       return sai(res, 201, { token, empresa: { id: empresa.id, nome: empresa.nome }, vaga, revisao: suspeita });
     }
 
@@ -295,14 +370,14 @@ export default async function handler(req, res) {
         if (e.status === 409) return sai(res, 409, { erro: "Essa pessoa já foi convidada ou já se candidatou a essa vaga." });
         throw e;
       }
-      await avisar("candidato", cand.id, { title: `${empresa.nome} convidou você`, body: `Para a vaga de ${vaga.titulo}. Toque para ver e responder.`, url: "/#candidaturas" });
+      await avisarCandidato(cand.id, "respostas", { titulo: `${empresa.nome} convidou você`, texto: `Para a vaga de ${vaga.titulo}. Abra o Matchly para ver e responder.`, botao: "Ver o convite" });
       return sai(res, 201, { ok: true });
     }
 
     if (["painel", "etapa", "vista", "encerrar"].includes(acao)) {
       const empresa = await empresaDoToken(d.token);
       if (!empresa) return sai(res, 401, { erro: "Seu acesso não foi encontrado. Entre com seu WhatsApp e senha." });
-      const vagas = await db(`vagas?select=id,titulo,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,habilidades,area,escolaridade,exige_experiencia,descricao,ativa,suspeita,publicada_em,particular&empresa_id=eq.${empresa.id}&order=publicada_em.desc.nullslast`);
+      const vagas = await db(`vagas?select=id,titulo,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,habilidades,area,escolaridade,exige_experiencia,descricao,ativa,suspeita,publicada_em,particular,horarios&empresa_id=eq.${empresa.id}&order=publicada_em.desc.nullslast`);
       const ids = vagas.map((v) => v.id);
 
       if (acao === "painel") {
@@ -348,7 +423,7 @@ export default async function handler(req, res) {
         const textos = { Entrevista: [`${empresa.nome} quer conversar com você`, "Fique de olho no seu WhatsApp."],
           Contratada: [`Você foi contratado(a) por ${empresa.nome}!`, "Depois do serviço, conte como foi: avalie a empresa no Matchly."],
           Recusada: [`${empresa.nome} seguiu com outra pessoa`, "Continue se candidatando. Outras vagas vão aparecer."] };
-        if (textos[d.etapa]) await avisar("candidato", r[0].candidato_id, { title: textos[d.etapa][0], body: `${v?.titulo ? `Vaga: ${v.titulo}. ` : ""}${textos[d.etapa][1]}`, url: "/#candidaturas" });
+        if (textos[d.etapa]) await avisarCandidato(r[0].candidato_id, "respostas", { titulo: textos[d.etapa][0], texto: `${v?.titulo ? `Vaga: ${v.titulo}. ` : ""}${textos[d.etapa][1]}` });
         return sai(res, 200, { ok: true, candidatura: r[0] });
       }
     }
@@ -416,8 +491,8 @@ export default async function handler(req, res) {
         }
         const primeiro = nome.split(" ")[0];
         await avisar("empresa", vaga.empresa_id, { title: `Nova candidatura: ${primeiro}`, body: `Para a vaga de ${vaga.titulo}. Toque para ver o currículo.`, url: "/#area" });
-        await email(vaga.empresas?.email_contato, `Nova candidatura para ${vaga.titulo}`,
-          `<p>${primeiro} enviou o currículo para a vaga <b>${vaga.titulo}</b>.</p><p><a href="${SITE}/#area">Ver no Matchly</a></p>`);
+        await avisarEmpresaPorEmail(vaga.empresa_id, `Nova candidatura para ${vaga.titulo}`, `${primeiro} enviou o currículo para a vaga <b>${vaga.titulo}</b>.`);
+        await avisarCandidato(candidato.id, "candidatura", { titulo: "Candidatura enviada!", texto: `Seu currículo foi para ${vaga.empresas?.nome || "a empresa"}, vaga de ${vaga.titulo}. Avisamos quando responderem.`, botao: "Acompanhar candidatura" });
         return sai(res, 201, { token, candidatura: { id: cand.id, etapa: cand.etapa, criada_em: cand.criada_em } });
       } catch (e) {
         if (e.status === 409) return sai(res, 409, { token, erro: "Você já se candidatou a esta vaga." });

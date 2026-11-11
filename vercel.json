@@ -1,0 +1,7 @@
+{
+  "crons": [{ "path": "/api/resumo", "schedule": "0 12 * * *" }],
+  "functions": {
+    "api/app.js": { "maxDuration": 60 },
+    "api/resumo.js": { "maxDuration": 60 }
+  }
+}

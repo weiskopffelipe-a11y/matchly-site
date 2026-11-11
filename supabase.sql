@@ -98,6 +98,7 @@ create table if not exists vagas (
 );
 alter table vagas add column if not exists assinatura text;
 alter table vagas add column if not exists particular boolean not null default false;  -- publicada por uma pessoa (não empresa)
+alter table vagas add column if not exists horarios text[] not null default '{}';     -- manhã, tarde, noite, escala 6x1...
 create index if not exists vagas_empresa_idx on vagas (empresa_id);
 create index if not exists vagas_lista_idx on vagas (ativa, suspeita, publicada_em desc);
 create index if not exists vagas_cidade_idx on vagas (lower(cidade));
@@ -136,6 +137,7 @@ create index if not exists candidaturas_vaga_idx on candidaturas (vaga_id, criad
 create index if not exists candidaturas_candidato_idx on candidaturas (candidato_id);
 alter table candidatos add column if not exists perfil jsonb not null default '{}';  -- perfil e preferências, para entrar em outro aparelho
 alter table candidatos alter column token_hash drop not null;  -- as chaves agora ficam na tabela acessos
+alter table candidatos add column if not exists ultimo_resumo timestamptz;           -- último e-mail/SMS com vagas novas
 
 -- ---------------------------------------------------------------------
 -- ACESSOS: cada aparelho tem a sua chave (um dono pode ter vários aparelhos)
