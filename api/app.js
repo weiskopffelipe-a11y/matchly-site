@@ -89,13 +89,9 @@ export default async function handler(req, res) {
       const rows = await db("vagas?select=id,empresa_id,origem,titulo,descricao,cidade,uf,modelo,contrato,salario_min,salario_max,unidade,escolaridade,exige_experiencia,area,habilidades,beneficios,url,fonte_nome,publicada_em,coletada_em,particular," +
         "empresas(id,nome,dominio,site,logo_url,setor,cidade,uf,tamanho,descricao,beneficios,verificada,tipo)" +
         "&ativa=eq.true&suspeita=eq.false&order=publicada_em.desc.nullslast&limit=1500");
-      let total = 0;
-      try {
-        const r = await fetch(`${SUPA}/rest/v1/empresas?select=id&limit=1`, { headers: { ...cabecalhoChave(CHAVE), Prefer: "count=exact" } });
-        total = +(r.headers.get("content-range") || "").split("/")[1] || 0;
-      } catch { /* só informativo */ }
-      res.setHeader("Cache-Control", "s-maxage=15, stale-while-revalidate=60");
-      return sai(res, 200, { vagas: rows, empresas: total });
+      // vaga nova aparece em poucos segundos: o cache da Vercel guarda a lista por 5s no máximo
+      res.setHeader("Cache-Control", "s-maxage=5, stale-while-revalidate=5");
+      return sai(res, 200, { vagas: rows, empresas: new Set(rows.map((v) => v.empresa_id)).size });
     }
 
     if (req.method !== "POST") return sai(res, 405, { erro: "Use POST." });

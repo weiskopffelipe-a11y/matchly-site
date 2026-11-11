@@ -208,5 +208,9 @@ select
   (select max(terminada_em) from coletas)                           as ultima_coleta;
 revoke all on painel from anon, authenticated;
 
+-- limpa os dados do teste de instalação (10/11/2026)
+delete from empresas   where origem = 'cadastro' and nome in ('TESTE Matchly', 'TESTE Matchly 2');
+delete from candidatos where nome = 'TESTE Trabalhador';
+
 -- avisa a API do Supabase que as tabelas mudaram
 notify pgrst, 'reload schema';
