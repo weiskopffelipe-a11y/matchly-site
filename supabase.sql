@@ -31,6 +31,10 @@ create table if not exists empresas (
   criada_em     timestamptz not null default now(),
   atualizada_em timestamptz not null default now()
 );
+-- quem publica pelo site: "empresa" ou "pessoa" (particular), e o acesso sem senha
+alter table empresas add column if not exists tipo text not null default 'empresa';
+alter table empresas add column if not exists token_hash text;
+create unique index if not exists empresas_token_uq on empresas (token_hash);
 create unique index if not exists empresas_dominio_uq on empresas (dominio);  -- vários sem domínio (null) são permitidos
 create index if not exists empresas_nome_trgm on empresas using gin (nome gin_trgm_ops);
 
@@ -93,32 +97,42 @@ create table if not exists vagas (
   unique (origem, id_externo)
 );
 alter table vagas add column if not exists assinatura text;
+alter table vagas add column if not exists particular boolean not null default false;  -- publicada por uma pessoa (não empresa)
+create index if not exists vagas_empresa_idx on vagas (empresa_id);
 create index if not exists vagas_lista_idx on vagas (ativa, suspeita, publicada_em desc);
 create index if not exists vagas_cidade_idx on vagas (lower(cidade));
 create index if not exists vagas_hash_idx on vagas (hash_conteudo);
 create index if not exists vagas_titulo_trgm on vagas using gin (titulo gin_trgm_ops);
 
 -- ---------------------------------------------------------------------
--- CANDIDATOS (ligados ao login do Supabase), CANDIDATURAS, DENÚNCIAS
+-- CANDIDATOS E CANDIDATURAS
+-- O trabalhador não cria senha: o site guarda uma chave no aparelho dele.
+-- A candidatura guarda a cópia do currículo exatamente como foi enviada.
 -- ---------------------------------------------------------------------
-create table if not exists perfis (
-  id               uuid primary key references auth.users(id) on delete cascade,
-  curriculo        jsonb not null default '{}',   -- o mesmo formato do cadastro do site
-  preferencias     jsonb not null default '{}',
-  visivel_empresas boolean not null default true,
-  mostrar_contato  boolean not null default false,
-  atualizado_em    timestamptz not null default now()
+create table if not exists candidatos (
+  id            uuid primary key default gen_random_uuid(),
+  token_hash    text not null unique,
+  nome          text not null,
+  telefone      text,
+  cidade        text,
+  curriculo     jsonb not null default '{}',
+  criado_em     timestamptz not null default now(),
+  atualizado_em timestamptz not null default now()
 );
 
 create table if not exists candidaturas (
-  id         uuid primary key default gen_random_uuid(),
-  perfil_id  uuid not null references perfis(id) on delete cascade,
-  vaga_id    uuid references vagas(id) on delete set null,
-  etapa      text not null default 'Candidatura enviada',
-  notas      text,
-  criada_em  timestamptz not null default now(),
-  unique (perfil_id, vaga_id)
+  id            uuid primary key default gen_random_uuid(),
+  candidato_id  uuid not null references candidatos(id) on delete cascade,
+  vaga_id       uuid not null references vagas(id) on delete cascade,
+  etapa         text not null default 'Candidatura enviada',
+  mensagem      text,
+  curriculo     jsonb not null default '{}',
+  vista         boolean not null default false,
+  criada_em     timestamptz not null default now(),
+  atualizada_em timestamptz not null default now(),
+  unique (candidato_id, vaga_id)
 );
+create index if not exists candidaturas_vaga_idx on candidaturas (vaga_id, criada_em desc);
 
 create table if not exists denuncias (
   id         uuid primary key default gen_random_uuid(),
@@ -152,7 +166,7 @@ create table if not exists coletas (
 alter table empresas     enable row level security;
 alter table fontes       enable row level security;
 alter table vagas        enable row level security;
-alter table perfis       enable row level security;
+alter table candidatos   enable row level security;
 alter table candidaturas enable row level security;
 alter table denuncias    enable row level security;
 alter table coletas      enable row level security;
@@ -161,17 +175,14 @@ drop policy if exists "empresas visiveis" on empresas;
 create policy "empresas visiveis" on empresas for select to anon, authenticated using (true);
 -- CNPJ, e-mail e telefone de contato nunca saem para o público:
 revoke select on empresas from anon, authenticated;
-grant select (id, nome, dominio, site, logo_url, setor, cidade, uf, tamanho, descricao, beneficios, verificada, origem)
+grant select (id, nome, dominio, site, logo_url, setor, cidade, uf, tamanho, descricao, beneficios, verificada, origem, tipo)
   on empresas to anon, authenticated;
 
 drop policy if exists "vagas ativas" on vagas;
 create policy "vagas ativas" on vagas for select to anon, authenticated using (ativa and not suspeita);
 
-drop policy if exists "dono do perfil" on perfis;
-create policy "dono do perfil" on perfis for all to authenticated using (auth.uid() = id) with check (auth.uid() = id);
-
-drop policy if exists "dono da candidatura" on candidaturas;
-create policy "dono da candidatura" on candidaturas for all to authenticated using (auth.uid() = perfil_id) with check (auth.uid() = perfil_id);
+-- candidatos e candidaturas: nenhuma política pública. Só a /api (chave secreta) lê e grava,
+-- e ela confere a chave de acesso de quem pede.
 
 drop policy if exists "qualquer um denuncia" on denuncias;
 create policy "qualquer um denuncia" on denuncias for insert to anon, authenticated with check (true);
@@ -196,3 +207,6 @@ select
   (select count(*) from vagas where suspeita and ativa)             as vagas_em_revisao,
   (select max(terminada_em) from coletas)                           as ultima_coleta;
 revoke all on painel from anon, authenticated;
+
+-- avisa a API do Supabase que as tabelas mudaram
+notify pgrst, 'reload schema';

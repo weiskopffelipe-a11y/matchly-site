@@ -5,17 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/migrar.mjs && vite build",
     "coletar": "node scripts/coletar.mjs",
     "importar-radar": "node scripts/importar-radar.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.2"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -3,8 +3,10 @@
 // Roda na Vercel. Usa a chave secreta do Supabase, que nunca vai para o navegador.
 // =====================================================================
 
-const SUPA = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
-const CHAVE = process.env.SUPABASE_SERVICE_KEY || "";
+import crypto from "node:crypto";
+
+const SUPA = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
+const CHAVE = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "";
 
 const cabecalhoChave = (k) => (k.startsWith("eyJ") ? { apikey: k, Authorization: `Bearer ${k}` } : { apikey: k });
 const db = async (caminho, { method = "GET", body, prefer } = {}) => {
@@ -69,8 +71,11 @@ export default async function handler(req, res) {
       tamanho: limpa(d.tamanho, 20) || null, descricao: limpa(d.descricao, 1200) || null,
       beneficios: Array.isArray(d.beneficios) ? d.beneficios.slice(0, 15).map((b) => limpa(b, 40)) : [],
       responsavel: limpa(d.responsavel, 120), email_contato: limpa(d.email, 160), telefone: limpa(d.tel, 30) || null,
-      origem: "cadastro", verificada: false, atualizada_em: new Date().toISOString(),
+      origem: "cadastro", tipo: "empresa", verificada: false, atualizada_em: new Date().toISOString(),
     };
+    // acesso sem senha à área de quem contrata: a chave fica no aparelho, no banco só o hash
+    const token = crypto.randomBytes(24).toString("base64url");
+    dados.token_hash = crypto.createHash("sha256").update(token).digest("hex");
     if (existe.length) return res.status(409).json({ erro: "Esse CNPJ já está cadastrado. Se a página é sua, fale com a gente para assumir o controle." });
 
     // se a empresa já estava no radar (pelo site), assume aquele registro em vez de criar outro
@@ -109,7 +114,7 @@ export default async function handler(req, res) {
       if (process.env.EMAIL_ADMIN) await enviar(process.env.EMAIL_ADMIN, `Nova empresa para verificar: ${dados.nome}`, `<p>${dados.nome} · CNPJ ${cnpj} · ${dados.email_contato}</p>`);
     }
 
-    return res.status(201).json({ ok: true, id: empresa.id });
+    return res.status(201).json({ ok: true, id: empresa.id, token });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ erro: "Não foi possível cadastrar agora. Tente de novo em alguns minutos." });
