@@ -47,7 +47,7 @@ export default async function handler(req, res) {
 
   const cnpj = String(d.cnpj || "").replace(/\D/g, "");
   if (!limpa(d.nome)) return res.status(400).json({ erro: "Informe o nome da empresa." });
-  if (!cnpjValido(cnpj)) return res.status(400).json({ erro: "CNPJ inválido." });
+  if (cnpj && !cnpjValido(cnpj)) return res.status(400).json({ erro: "CNPJ inválido. Confira os números ou deixe em branco." });
   if (!/^\S+@\S+\.\S+$/.test(d.email || "") || !limpa(d.responsavel)) return res.status(400).json({ erro: "Informe nome e e-mail do responsável." });
   if (!d.aceite) return res.status(400).json({ erro: "É preciso aceitar os termos." });
 
@@ -63,10 +63,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    const existe = await db(`empresas?select=id&cnpj=eq.${cnpj}&limit=1`);
+    const existe = cnpj ? await db(`empresas?select=id&cnpj=eq.${cnpj}&limit=1`) : [];
     const dominio = limpa(d.dominio, 120).toLowerCase() || null;
     const dados = {
-      nome: limpa(d.nome, 200), razao_social: limpa(d.razao, 200) || null, cnpj, dominio, site: limpa(d.site, 200) || null,
+      nome: limpa(d.nome, 200), razao_social: limpa(d.razao, 200) || null, cnpj: cnpj || null, dominio, site: limpa(d.site, 200) || null,
       setor: limpa(d.setor, 80) || null, cidade: limpa(d.cidade, 80) || null, uf: limpa(d.uf, 2).toUpperCase() || null,
       tamanho: limpa(d.tamanho, 20) || null, descricao: limpa(d.descricao, 1200) || null,
       beneficios: Array.isArray(d.beneficios) ? d.beneficios.slice(0, 15).map((b) => limpa(b, 40)) : [],

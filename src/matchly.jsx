@@ -583,6 +583,7 @@ const api = async (acao, dados) => {
 const CHAVES = {
   get: (k) => { try { return localStorage.getItem("matchly:acesso-" + k) || ""; } catch (e) { return ""; } },
   set: (k, v) => { try { localStorage.setItem("matchly:acesso-" + k, v); } catch (e) { /* modo anônimo */ } },
+  del: (k) => { try { localStorage.removeItem("matchly:acesso-" + k); } catch (e) { /* segue */ } },
 };
 // link de acesso da área de quem contrata: https://site/#acesso=CHAVE
 const ACESSO_LINK = (() => {
@@ -594,6 +595,7 @@ const ACESSO_LINK = (() => {
     return true;
   } catch (e) { return false; }
 })();
+try { if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual"; } catch (e) { /* segue */ }
 const linkDeAcesso = (t) => `${window.location.origin}/#acesso=${t}`;
 const ETAPA_EMPRESA = { "Candidatura enviada": "Nova", "Entrevista": "Chamado para conversar", "Contratada": "Contratado(a)", "Recusada": "Não seguiu" };
 const quandoFoi = (iso) => {
@@ -951,8 +953,19 @@ export default function App() {
   );
 
   const go = (v) => { setOpenJob(null); setCompanyOpen(null); if (v !== "cvedit") setRevisarVaga(null); setView(v); window.scrollTo({ top: 0 }); };
+  // abrir uma vaga, uma empresa ou trocar de tela sempre começa do topo (antes ficava na altura da tela anterior)
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [view, openJob, companyOpen]);
   const requireLogin = (v) => (logged ? go(v) : go("signup"));
   // Entrar: em modo ao vivo só entra quem já se cadastrou neste aparelho
+  // sair da conta (fica em Mais): neste aparelho some tudo; para voltar, entra com WhatsApp e senha
+  const sairDaConta = () => {
+    if (AO_VIVO) {
+      CHAVES.del("candidato");
+      try { localStorage.removeItem("matchly:v1"); localStorage.removeItem("matchly:avisos-candidato"); } catch (e) { /* segue */ }
+      setProfile(EMPTY_PROFILE); setPrefs(EMPTY_PREFS); setApps([]); setSaved({}); setNotifs([]);
+    }
+    setLogged(false); go("landing"); setToast("Você saiu da sua conta.");
+  };
   const entrar = () => {
     const temCadastro = !!(GUARDADO?.profile?.name || CHAVES.get("candidato"));
     if (AO_VIVO && !temCadastro && CHAVES.get("empresa")) { go("recruiter"); return; }
@@ -981,9 +994,9 @@ export default function App() {
   const setFolder = (id, f) => setSaved((s) => ({ ...s, [id]: f }));
 
   const ctx = { profile, setProfile, prefs, setPrefs, matches, saved, toggleSave, setFolder, apply, apps, setApps, go, say, setOpenJob, hidden, setHidden, feed, logged, autopilot, setAutopilot,
-    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1), recarregarVagas: () => recarregar.current() };
+    radarTotal, carregando, comecar, setSaved, revisarVaga, setRevisarVaga, editarParaVaga, role, setRole, setLogged, myJobs, setMyJobs, bumpJobs, jobsVersion, following, setFollowing, companyOpen, setCompanyOpen, compare, setCompare, alerts, setAlerts, privacy, setPrivacy, notifs, setNotifs, sincronizar: () => setSinc((x) => x + 1), sairDaConta, recarregarVagas: () => recarregar.current() };
 
-  const navItems = [["dash", "Início"], ["feed", "Vagas"], ["search", "Buscar"], ["apps", "Candidaturas"], ["profile", "Meu perfil"], ["hub", "Mais"]];
+  const navItems = [["dash", "Início"], ["feed", "Vagas"], ["apps", "Candidaturas"], ["cv", "Meu currículo"], ["profile", "Meu perfil"], ["hub", "Mais"]];
   const unread = notifs.filter((n) => !n.read).length;
 
   return (
@@ -1014,12 +1027,10 @@ export default function App() {
               </button>
             )}
             <button className="btn btn-g" onClick={() => setDark(!dark)} title="Alternar modo escuro" aria-label="Alternar modo escuro"><Ic n={dark ? "sun" : "moon"} s={18} /></button>
-            {logged ? (
-              <button className="btn btn-s btn-sm" onClick={() => { setLogged(false); go("landing"); }}>Sair</button>
-            ) : (
+            {!logged && (
               <>
                 <button className="btn btn-g hide-m" onClick={entrar}>Entrar</button>
-                <button className="btn btn-p btn-sm" onClick={() => comecar([])}><span className="hide-m">Cadastre-se grátis</span><span className="only-m">Cadastrar</span></button>
+                <button className="btn btn-p btn-sm" onClick={() => go("cadastro")}><span className="hide-m">Cadastre-se grátis</span><span className="only-m">Cadastrar</span></button>
               </>
             )}
           </div>
@@ -1029,7 +1040,8 @@ export default function App() {
       <main className={logged ? "pad-m" : ""}>
         {openJob ? (JOBS.some((j) => j.id === openJob) ? <JobPage id={openJob} ctx={ctx} /> : <ErrorPage kind="errjob" ctx={ctx} />) :
           companyOpen && companyOf(companyOpen) ? <CompanyPage id={companyOpen} ctx={ctx} /> :
-          view === "hub" ? <Hub go={go} role={role} setRole={setRole} /> :
+          view === "hub" ? <Hub go={go} role={role} setRole={setRole} ctx={ctx} /> :
+          view === "cadastro" ? <EscolherCadastro ctx={ctx} /> :
           view === "resume" ? <ResumeAI ctx={ctx} /> :
           view === "cv" ? <MeuCurriculo ctx={ctx} /> :
           view === "cover" ? <CoverLetter ctx={ctx} /> :
@@ -1043,7 +1055,6 @@ export default function App() {
           view === "privacy" ? <Privacy ctx={ctx} /> :
           view === "recruiter" ? <Recruiter ctx={ctx} /> :
           view === "admin" ? <Admin ctx={ctx} /> :
-          view === "pricing" ? <Pricing ctx={ctx} /> :
           view === "donate" ? <Donate ctx={ctx} /> :
           view === "help" ? <Help ctx={ctx} /> :
           view === "hire" ? <HirePost ctx={ctx} /> :
@@ -1069,7 +1080,7 @@ export default function App() {
 
       {logged && (
         <nav className="mobnav">
-          {[["dash", "home", "Início"], ["feed", "briefcase", "Vagas"], ["search", "search", "Buscar"], ["apps", "list", "Candidaturas"], ["profile", "user", "Perfil"], ["hub", "more", "Mais"]].map(([v, i, l]) => (
+          {[["dash", "home", "Início"], ["feed", "briefcase", "Vagas"], ["apps", "list", "Candidaturas"], ["cv", "idcard", "Currículo"], ["profile", "user", "Perfil"], ["hub", "more", "Mais"]].map(([v, i, l]) => (
             <button key={v} data-on={view === v && !openJob ? "1" : "0"} onClick={() => go(v)}>
               <Ic n={i} s={21} />{l}
             </button>
@@ -1263,7 +1274,7 @@ function Rodape({ go, comecar }) {
             <Logo onClick={() => go("landing")} />
             <p style={{ marginTop: 14, fontSize: 14, maxWidth: 300 }}>Vagas de emprego e diárias perto de você. Gratuito para quem procura.</p>
           </div>
-          {col("Para quem procura", [["Ver vagas", () => go("search")], ["Cadastre-se grátis", () => comecar([])], ["Documentos e dicas", () => go("help")], ["Instalar no celular", () => go("instalar")]])}
+          {col("Para quem procura", [["Ver vagas", () => go("search")], ["Cadastre-se grátis", () => go("cadastro")], ["Documentos e dicas", () => go("help")], ["Instalar no celular", () => go("instalar")]])}
           {col("Para quem contrata", [["Publicar uma vaga", () => go("hire")], ["Cadastrar empresa", () => go("companyRegister")], ["Empresas", () => go("companies")]])}
           {col("Matchly", [["Privacidade", () => go("privacy")], ["Segurança e golpes", () => go("help")], ["Apoie o projeto", () => go("donate")]])}
         </div>
@@ -2175,7 +2186,8 @@ function Feed({ ctx }) {
     <div className="wrap" style={{ padding: "32px 24px 60px", maxWidth: 860 }}>
       <div className="between">
         <div><h2>Vagas para você</h2><p className="muted" style={{ marginTop: 4 }}>As que mais combinam com você aparecem primeiro.</p></div>
-        <button className="btn btn-s btn-sm" onClick={async () => { setLoading(true); if (AO_VIVO) await ctx.recarregarVagas?.(); setTimeout(() => { setLoading(false); ctx.say("Vagas atualizadas"); }, AO_VIVO ? 0 : 600); }}>Atualizar</button>
+        <div className="row" style={{ gap: 8 }}><button className="btn btn-g btn-sm" onClick={() => ctx.go("search")}><Ic n="search" s={15} /> Buscar</button>
+        <button className="btn btn-s btn-sm" onClick={async () => { setLoading(true); if (AO_VIVO) await ctx.recarregarVagas?.(); setTimeout(() => { setLoading(false); ctx.say("Vagas atualizadas"); }, AO_VIVO ? 0 : 600); }}>Atualizar</button></div>
       </div>
       <div className="chips rolar" style={{ marginTop: 16 }}>
         {QUICK.map((q) => <button key={q} className="chip" data-on={quick === q ? "1" : "0"} onClick={() => setQuick(q)}>{q}</button>)}
@@ -2927,7 +2939,58 @@ const Switch = ({ on, onChange, label }) => (
   </div>
 );
 
-const Hub = ({ go, role, setRole }) => {
+/* Cadastro: primeiro a pessoa diz se procura trabalho ou se quer contratar */
+function EscolherCadastro({ ctx }) {
+  const Op = ({ icone, titulo, sub, onClick, id }) => (
+    <button id={id} className="card card-h" onClick={onClick} style={{ textAlign: "left", cursor: "pointer", display: "flex", gap: 16, alignItems: "flex-start", width: "100%" }}>
+      <span style={{ flex: "none", width: 52, height: 52, borderRadius: 14, background: "var(--wine-tint)", color: "var(--wine)", display: "flex", alignItems: "center", justifyContent: "center" }}><Ic n={icone} s={26} /></span>
+      <span><b style={{ fontSize: 18, color: "var(--ink)" }}>{titulo}</b><span className="small" style={{ display: "block", marginTop: 6 }}>{sub}</span></span>
+    </button>
+  );
+  return (
+    <div className="wrap" style={{ maxWidth: 640, padding: "44px 24px 80px" }}>
+      <h2>Cadastre-se grátis</h2>
+      <p style={{ marginTop: 8, marginBottom: 24 }}>Para começar, diga o que você quer fazer no Matchly.</p>
+      <div className="col" style={{ gap: 14 }}>
+        <Op id="cad-trabalho" icone="briefcase" titulo="Procuro trabalho" sub="Diária, emprego fixo ou primeiro emprego. Cadastro em 1 minuto, sem precisar de currículo." onClick={() => { ctx.setRole("Candidato"); ctx.comecar([]); }} />
+        <Op id="cad-contratar" icone="building" titulo="Quero contratar" sub="Para empresas e para pessoas que precisam de alguém: diarista, babá, passeador de cachorro, ajudante. Publicar a vaga é grátis." onClick={() => { ctx.setRole("Contratante"); ctx.go("hire"); }} />
+      </div>
+      <p className="small" style={{ marginTop: 18 }}>Tem uma empresa e quer a página dela com logo e site? <a href="#" onClick={(e) => { e.preventDefault(); ctx.go("companyRegister"); }}>Cadastrar empresa</a></p>
+      <p className="small" style={{ marginTop: 8 }}>Já tem cadastro? <a href="#" onClick={(e) => { e.preventDefault(); ctx.go("entrar"); }}>Entrar</a></p>
+    </div>
+  );
+}
+
+/* Minha conta (em Mais): com que dados a pessoa entra e o botão de sair */
+function MinhaConta({ ctx }) {
+  const [confirmar, setConfirmar] = useState(false);
+  const p = ctx.profile || {};
+  return (
+    <div className="card" style={{ marginTop: 20 }}>
+      <div className="between" style={{ flexWrap: "wrap", gap: 12 }}>
+        <div className="row" style={{ gap: 12 }}>
+          <span style={{ width: 46, height: 46, borderRadius: 99, background: "var(--wine-tint)", color: "var(--wine)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{initials(p.name)}</span>
+          <div>
+            <div style={{ fontWeight: 600, color: "var(--ink)" }}>{p.name || "Minha conta"}</div>
+            <div className="small">{AO_VIVO ? <>Você entra com o WhatsApp <b>{p.phone || "—"}</b> e a sua senha de 6 números.</> : p.phone || ""}</div>
+          </div>
+        </div>
+        {!confirmar ? (
+          <button className="btn btn-s btn-sm" onClick={() => setConfirmar(true)}>Sair da conta</button>
+        ) : (
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <span className="small">Sair da conta neste aparelho?</span>
+            <button className="btn btn-p btn-sm" onClick={ctx.sairDaConta}>Sim, sair</button>
+            <button className="btn btn-g btn-sm" onClick={() => setConfirmar(false)}>Cancelar</button>
+          </div>
+        )}
+      </div>
+      {confirmar && AO_VIVO && <p className="small" style={{ marginTop: 10 }}>Para entrar de novo, ou entrar com outra conta, toque em <b>Entrar</b> e use o WhatsApp e a senha.</p>}
+    </div>
+  );
+}
+
+const Hub = ({ go, role, setRole, ctx }) => {
   const items = [
     ["help", "puzzle", "Como conseguir a vaga", "Documentos, entrevista e cuidado com golpes"],
     ["donate", "heart", "Apoiar o projeto", "Doação via Pix para manter o site gratuito"],
@@ -2946,12 +3009,12 @@ const Hub = ({ go, role, setRole }) => {
     ["calendar", "calendar", "Calendário", "Entrevistas, prazos e lembretes"],
     ["stats", "chart", "Meu desempenho", "Números da sua busca"],
     ["privacy", "lock", "Privacidade e segurança", "Quem vê o quê e seus dados"],
-    ["pricing", "card", "Planos", "Gratuito, Pro e Premium"],
   ];
   return (
     <div className="wrap" style={{ padding: "32px 24px 60px" }}>
-      <h2>Tudo o que o Matchly faz</h2>
-      <p style={{ marginTop: 6 }}>Cada área conversa com as outras: o perfil alimenta o currículo, o currículo alimenta a candidatura.</p>
+      <h2>Mais</h2>
+      <p style={{ marginTop: 6 }}>Sua conta e tudo o que o Matchly faz.</p>
+      {ctx && <MinhaConta ctx={ctx} />}
       <div style={{ marginTop: 14 }}><BotaoInstalar compacto /></div>
       <div className="grid-cards" style={{ marginTop: 24 }}>
         {items.map(([v, i, t, d]) => (
@@ -3707,7 +3770,7 @@ function CompanyRegister({ ctx }) {
     const dom = dominioDe(f.site);
     const emailDom = (f.email.split("@")[1] || "").toLowerCase();
     if (!f.nome.trim()) return setErro("Escreva o nome da empresa.");
-    if (!cnpjValido(f.cnpj)) return setErro("Esse CNPJ não é válido. Confira os números.");
+    if (f.cnpj.replace(/\D/g, "") && !cnpjValido(f.cnpj)) return setErro("Esse CNPJ não é válido. Confira os números ou deixe em branco.");
     if (!f.responsavel.trim() || !/\S+@\S+\.\S+/.test(f.email)) return setErro("Informe o nome e um e-mail de quem responde pela empresa.");
     if (!f.aceite) return setErro("É preciso aceitar os termos para publicar vagas.");
     setErro(""); setEnviando(true);
@@ -3755,7 +3818,7 @@ function CompanyRegister({ ctx }) {
         <div className="grid2">
           <Field label="Nome da empresa"><input className="input" value={f.nome} onChange={(e) => set("nome", e.target.value)} placeholder="Como os clientes conhecem" /></Field>
           <Field label="Razão social"><input className="input" value={f.razao} onChange={(e) => set("razao", e.target.value)} /></Field>
-          <Field label="CNPJ" hint={f.cnpj.replace(/\D/g, "").length === 14 ? (cnpjValido(f.cnpj) ? "✓ CNPJ válido" : "CNPJ inválido") : "Usado para verificar a empresa. Não aparece no site."}>
+          <Field label="CNPJ (opcional)" hint={f.cnpj.replace(/\D/g, "").length === 14 ? (cnpjValido(f.cnpj) ? "✓ CNPJ válido" : "CNPJ inválido") : "Se tiver, ajuda a ganhar o selo de empresa verificada. Não aparece no site."}>
             <input className="input" inputMode="numeric" value={f.cnpj} onChange={(e) => set("cnpj", mascaraCnpj(e.target.value))} placeholder="00.000.000/0000-00" />
           </Field>
           <Field label="Site"><input className="input" value={f.site} onChange={(e) => set("site", e.target.value)} placeholder="www.suaempresa.com.br" /></Field>
@@ -3806,7 +3869,7 @@ function CompanyRegister({ ctx }) {
         <button className="btn btn-g" onClick={() => ctx.go("companies")}>Voltar</button>
         <button className="btn btn-p" disabled={enviando} onClick={enviar}>{enviando ? "Enviando…" : "Cadastrar empresa"}</button>
       </div>
-      <p className="muted" style={{ marginTop: 14 }}>Empresas novas aparecem com o selo "verificação pendente" até conferirmos o CNPJ e o contato.</p>
+      <p className="muted" style={{ marginTop: 14 }}>Empresas novas aparecem com o selo "verificação pendente" até conferirmos os dados e o contato. O CNPJ é opcional.</p>
     </div>
   );
 }
