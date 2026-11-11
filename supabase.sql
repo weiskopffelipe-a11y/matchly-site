@@ -111,7 +111,7 @@ create index if not exists vagas_titulo_trgm on vagas using gin (titulo gin_trgm
 -- ---------------------------------------------------------------------
 create table if not exists candidatos (
   id            uuid primary key default gen_random_uuid(),
-  token_hash    text not null unique,
+  token_hash    text unique,
   nome          text not null,
   telefone      text,
   cidade        text,
@@ -135,6 +135,7 @@ create table if not exists candidaturas (
 create index if not exists candidaturas_vaga_idx on candidaturas (vaga_id, criada_em desc);
 create index if not exists candidaturas_candidato_idx on candidaturas (candidato_id);
 alter table candidatos add column if not exists perfil jsonb not null default '{}';  -- perfil e preferências, para entrar em outro aparelho
+alter table candidatos alter column token_hash drop not null;  -- as chaves agora ficam na tabela acessos
 
 -- ---------------------------------------------------------------------
 -- ACESSOS: cada aparelho tem a sua chave (um dono pode ter vários aparelhos)
